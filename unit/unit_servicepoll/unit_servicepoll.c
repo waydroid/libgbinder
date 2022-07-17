@@ -1,6 +1,6 @@
 /*
- * Copyright (C) 2018-2021 Jolla Ltd.
- * Copyright (C) 2018-2021 Slava Monich <slava.monich@jolla.com>
+ * Copyright (C) 2018-2022 Jolla Ltd.
+ * Copyright (C) 2018-2022 Slava Monich <slava.monich@jolla.com>
  *
  * You may use this file under the terms of BSD license as follows:
  *
@@ -201,6 +201,18 @@ gbinder_servicemanager_aidl2_get_type()
 }
 
 GType
+gbinder_servicemanager_aidl3_get_type()
+{
+    return TEST_TYPE_SERVICEMANAGER;
+}
+
+GType
+gbinder_servicemanager_aidl4_get_type()
+{
+    return TEST_TYPE_SERVICEMANAGER;
+}
+
+GType
 gbinder_servicemanager_hidl_get_type()
 {
     return TEST_TYPE_SERVICEMANAGER;
@@ -233,7 +245,7 @@ test_basic(
     void)
 {
     const char* dev = GBINDER_DEFAULT_BINDER;
-    GBinderIpc* ipc = gbinder_ipc_new(dev);
+    GBinderIpc* ipc = gbinder_ipc_new(dev, NULL);
     GBinderServicePoll* weakptr = NULL;
     GBinderServiceManager* manager;
     GBinderServicePoll* poll;
@@ -309,7 +321,7 @@ test_notify1(
     void)
 {
     const char* dev = GBINDER_DEFAULT_BINDER;
-    GBinderIpc* ipc = gbinder_ipc_new(dev);
+    GBinderIpc* ipc = gbinder_ipc_new(dev, NULL);
     GMainLoop* loop = g_main_loop_new(NULL, FALSE);
     GBinderServicePoll* weakptr = NULL;
     GBinderServiceManager* manager;
@@ -383,7 +395,7 @@ test_notify2(
     void)
 {
     const char* dev = GBINDER_DEFAULT_BINDER;
-    GBinderIpc* ipc = gbinder_ipc_new(dev);
+    GBinderIpc* ipc = gbinder_ipc_new(dev, NULL);
     GMainLoop* loop = g_main_loop_new(NULL, FALSE);
     GBinderServicePoll* weakptr = NULL;
     GBinderServiceManager* manager;
@@ -442,7 +454,7 @@ test_already_there(
     void)
 {
     const char* dev = GBINDER_DEFAULT_BINDER;
-    GBinderIpc* ipc = gbinder_ipc_new(dev);
+    GBinderIpc* ipc = gbinder_ipc_new(dev, NULL);
     GMainLoop* loop = g_main_loop_new(NULL, FALSE);
     GBinderServicePoll* weakptr = NULL;
     GBinderServiceManager* manager;
@@ -477,6 +489,9 @@ test_already_there(
 
 int main(int argc, char* argv[])
 {
+    G_GNUC_BEGIN_IGNORE_DEPRECATIONS;
+    g_type_init();
+    G_GNUC_END_IGNORE_DEPRECATIONS;
     g_test_init(&argc, &argv, NULL);
     g_test_add_func(TEST_("null"), test_null);
     g_test_add_func(TEST_("basic"), test_basic);

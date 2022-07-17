@@ -1,6 +1,6 @@
 /*
- * Copyright (C) 2018-2021 Jolla Ltd.
- * Copyright (C) 2018-2021 Slava Monich <slava.monich@jolla.com>
+ * Copyright (C) 2018-2022 Jolla Ltd.
+ * Copyright (C) 2018-2022 Slava Monich <slava.monich@jolla.com>
  *
  * You may use this file under the terms of BSD license as follows:
  *
@@ -82,6 +82,7 @@ struct gbinder_driver {
     void* vm;
     gsize vmsize;
     char* dev;
+    const char* name;
     const GBinderIo* io;
     const GBinderRpcProtocol* protocol;
 };
@@ -169,6 +170,14 @@ gbinder_driver_verbose_transaction_data(
                     GVERBOSE("> %s %d (%u bytes, %u objects)", name,
                         tx->status, (guint)tx->size, n);
                 }
+            } else if (tx->code) {
+                if (tx->target) {
+                    GVERBOSE("> %s %p 0x%08x (%u bytes, %u objects)", name,
+                        tx->target, tx->code, (guint)tx->size, n);
+                } else {
+                    GVERBOSE("> %s 0x%08x (%u bytes, %u objects)", name,
+                        tx->code, (guint)tx->size, n);
+                }
             } else {
                 if (tx->target) {
                     GVERBOSE("> %s %p (%u bytes, %u objects)", name,
@@ -186,6 +195,14 @@ gbinder_driver_verbose_transaction_data(
                 } else {
                     GVERBOSE("> %s %d (%u bytes)", name, tx->status, (guint)
                         tx->size);
+                }
+            } else if (tx->code) {
+                if (tx->target) {
+                    GVERBOSE("> %s %p 0x%08x (%u bytes)", name,
+                        tx->target, tx->code, (guint)tx->size);
+                } else {
+                    GVERBOSE("> %s 0x%08x (%u bytes)", name,
+                        tx->code, (guint)tx->size);
                 }
             } else {
                 if (tx->target) {
@@ -549,7 +566,8 @@ gbinder_driver_handle_transaction(
                 tx.flags, &txstatus);
         break;
     default:
-        GWARN("Unhandled transaction %s 0x%08x", iface, tx.code);
+        GWARN("Unhandled transaction %s 0x%08x from %s", iface, tx.code,
+            self->name);
         break;
     }
 
@@ -675,12 +693,11 @@ gbinder_driver_handle_command(
     } else if (cmd == io->br.transaction) {
         gbinder_driver_handle_transaction(self, context, data);
     } else if (cmd == io->br.dead_binder) {
-        guint8 buf[4 + GBINDER_MAX_COOKIE_SIZE];
         guint64 handle = 0;
         GBinderRemoteObject* obj;
 
         io->decode_cookie(data, &handle);
-        GVERBOSE("> BR_DEAD_BINDER %llu", (long long unsigned int)handle);
+        GVERBOSE("> BR_DEAD_BINDER 0x%08llx", (long long unsigned int) handle);
         obj = gbinder_object_registry_get_remote(reg, (guint32)handle,
             REMOTE_REGISTRY_DONT_CREATE);
         if (obj) {
@@ -688,13 +705,23 @@ gbinder_driver_handle_command(
             gbinder_remote_object_handle_death_notification(obj);
             gbinder_remote_object_unref(obj);
         } else {
+            guint8 buf[4 + GBINDER_MAX_COOKIE_SIZE];
+
             /* This shouldn't normally happen. Just send the same data back. */
-            GVERBOSE("< BC_DEAD_BINDER_DONE %llu", (long long unsigned int)
+            GVERBOSE("< BC_DEAD_BINDER_DONE 0x%08llx", (long long unsigned int)
                 handle);
             gbinder_driver_cmd_data(self, io->bc.dead_binder_done, data, buf);
         }
     } else if (cmd == io->br.clear_death_notification_done) {
-        GVERBOSE("> BR_CLEAR_DEATH_NOTIFICATION_DONE");
+#if GUTIL_LOG_VERBOSE
+        if (GLOG_ENABLED(GLOG_LEVEL_VERBOSE)) {
+            guint64 handle = 0;
+
+            io->decode_cookie(data, &handle);
+            GVERBOSE("> BR_CLEAR_DEATH_NOTIFICATION_DONE 0x%08llx",
+                (long long unsigned int) handle);
+        }
+#endif /* GUTIL_LOG_VERBOSE */
     } else {
 #pragma message("TODO: handle more commands from the driver")
         GWARN("Unexpected command 0x%08x", cmd);
@@ -870,6 +897,9 @@ gbinder_driver_new(
                     self->vm = vm;
                     self->vmsize = vmsize;
                     self->dev = g_strdup(dev);
+                    self->name = self->dev + /* Shorter version for logging */
+                        (g_str_has_prefix(self->dev, "/dev/") ? 5 : 0);
+
                     if (gbinder_system_ioctl(fd, BINDER_SET_MAX_THREADS,
                         &max_threads) < 0) {
                         GERR("%s failed to set max threads (%u): %s", dev,
@@ -1026,7 +1056,7 @@ gbinder_driver_dead_binder_done(
         write.ptr = (uintptr_t)buf;
         write.size = 4 + io->encode_cookie(data + 1, obj->handle);
 
-        GVERBOSE("< BC_DEAD_BINDER_DONE %u", obj->handle);
+        GVERBOSE("< BC_DEAD_BINDER_DONE 0x%08x", obj->handle);
         return gbinder_driver_write(self, &write) >= 0;
     } else {
         return FALSE;

@@ -16,7 +16,7 @@
 
 VERSION_MAJOR = 1
 VERSION_MINOR = 1
-VERSION_RELEASE = 9
+VERSION_RELEASE = 24
 
 # Version for pkg-config
 PCVERSION = $(VERSION_MAJOR).$(VERSION_MINOR).$(VERSION_RELEASE)
@@ -82,6 +82,7 @@ SRC = \
   gbinder_config.c \
   gbinder_driver.c \
   gbinder_eventloop.c \
+  gbinder_fmq.c \
   gbinder_io_32.c \
   gbinder_io_64.c \
   gbinder_ipc.c \
@@ -103,6 +104,8 @@ SRC += \
   gbinder_servicemanager.c \
   gbinder_servicemanager_aidl.c \
   gbinder_servicemanager_aidl2.c \
+  gbinder_servicemanager_aidl3.c \
+  gbinder_servicemanager_aidl4.c \
   gbinder_servicemanager_hidl.c
 
 SRC += \
@@ -157,6 +160,16 @@ DEBUG_OBJS = $(SRC:%.c=$(DEBUG_BUILD_DIR)/%.o)
 RELEASE_OBJS = $(SRC:%.c=$(RELEASE_BUILD_DIR)/%.o)
 COVERAGE_OBJS = $(SRC:%.c=$(COVERAGE_BUILD_DIR)/%.o)
 
+DEBUG_SO = $(DEBUG_BUILD_DIR)/$(LIB_SO)
+RELEASE_SO = $(RELEASE_BUILD_DIR)/$(LIB_SO)
+DEBUG_LINK = $(DEBUG_BUILD_DIR)/$(LIB_SYMLINK1)
+RELEASE_LINK = $(RELEASE_BUILD_DIR)/$(LIB_SYMLINK1)
+DEBUG_DEV_LINK = $(DEBUG_BUILD_DIR)/$(LIB_DEV_SYMLINK)
+RELEASE_DEV_LINK = $(RELEASE_BUILD_DIR)/$(LIB_DEV_SYMLINK)
+DEBUG_LIB = $(DEBUG_BUILD_DIR)/$(LIB)
+RELEASE_LIB = $(RELEASE_BUILD_DIR)/$(LIB)
+COVERAGE_LIB = $(COVERAGE_BUILD_DIR)/$(LIB)
+
 #
 # Dependencies
 #
@@ -173,19 +186,14 @@ $(DEBUG_OBJS) $(DEBUG_SO): | $(DEBUG_BUILD_DIR) $(DEBUG_DEPS)
 $(RELEASE_OBJS) $(RELEASE_SO): | $(RELEASE_BUILD_DIR) $(RELEASE_DEPS)
 $(COVERAGE_OBJS) $(COVERAGE_LIB): | $(COVERAGE_BUILD_DIR)
 
+$(DEBUG_LINK): | $(DEBUG_LIB)
+$(RELEASE_LINK): | $(RELEASE_LIB)
+$(DEBUG_DEV_LINK): | $(DEBUG_LINK)
+$(RELEASE_DEV_LINK): | $(RELEASE_LINK)
+
 #
 # Rules
 #
-
-DEBUG_SO = $(DEBUG_BUILD_DIR)/$(LIB_SO)
-RELEASE_SO = $(RELEASE_BUILD_DIR)/$(LIB_SO)
-DEBUG_LINK = $(DEBUG_BUILD_DIR)/$(LIB_SYMLINK1)
-RELEASE_LINK = $(RELEASE_BUILD_DIR)/$(LIB_SYMLINK1)
-DEBUG_DEV_LINK = $(DEBUG_BUILD_DIR)/$(LIB_DEV_SYMLINK)
-RELEASE_DEV_LINK = $(RELEASE_BUILD_DIR)/$(LIB_DEV_SYMLINK)
-DEBUG_LIB = $(DEBUG_BUILD_DIR)/$(LIB)
-RELEASE_LIB = $(RELEASE_BUILD_DIR)/$(LIB)
-COVERAGE_LIB = $(COVERAGE_BUILD_DIR)/$(LIB)
 
 debug: $(DEBUG_SO) $(DEBUG_LINK) $(DEBUG_DEV_LINK)
 

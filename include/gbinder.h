@@ -38,6 +38,7 @@
 #include "gbinder_bridge.h"
 #include "gbinder_buffer.h"
 #include "gbinder_client.h"
+#include "gbinder_fmq.h"
 #include "gbinder_local_object.h"
 #include "gbinder_local_reply.h"
 #include "gbinder_local_request.h"

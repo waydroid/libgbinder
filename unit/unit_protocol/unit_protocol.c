@@ -1,6 +1,6 @@
 /*
- * Copyright (C) 2018-2020 Jolla Ltd.
- * Copyright (C) 2018-2020 Slava Monich <slava.monich@jolla.com>
+ * Copyright (C) 2018-2022 Jolla Ltd.
+ * Copyright (C) 2018-2022 Slava Monich <slava.monich@jolla.com>
  *
  * You may use this file under the terms of BSD license as follows:
  *
@@ -49,6 +49,7 @@ static const char TMP_DIR_TEMPLATE[] = "gbinder-test-protocol-XXXXXX";
 #define STRICT_MODE_PENALTY_GATHER (0x40 << 16)
 #define BINDER_RPC_FLAGS (STRICT_MODE_PENALTY_GATHER)
 #define UNSET_WORK_SOURCE (-1)
+#define BINDER_SYS_HEADER GBINDER_FOURCC('S', 'Y', 'S', 'T')
 
 typedef struct test_data {
     const char* name;
@@ -80,6 +81,15 @@ static const guint8 test_header_aidl2 [] = {
     TEST_INT16_BYTES('o'), 0x00, 0x00
 };
 
+static const guint8 test_header_aidl3 [] = {
+    TEST_INT32_BYTES(BINDER_RPC_FLAGS),
+    TEST_INT32_BYTES(UNSET_WORK_SOURCE),
+    TEST_INT32_BYTES(BINDER_SYS_HEADER),
+    TEST_INT32_BYTES(3),
+    TEST_INT16_BYTES('f'), TEST_INT16_BYTES('o'),
+    TEST_INT16_BYTES('o'), 0x00, 0x00
+};
+
 static const guint8 test_header_hidl [] = {
     'f', 'o', 'o', 0x00
 };
@@ -97,6 +107,14 @@ static const TestHeaderData test_header_tests[] = {
       test_header_aidl2, 5 }, /* Short packet */
     { "aidl2/short/3", "adl2", GBINDER_DEFAULT_BINDER, NULL,
       test_header_aidl2, 9 }, /* Short packet */
+    { "aidl3/ok", "aidl3", GBINDER_DEFAULT_BINDER, "foo",
+      TEST_ARRAY_AND_SIZE(test_header_aidl3) },
+    { "aidl3/short/1", "aidl3", GBINDER_DEFAULT_BINDER, NULL,
+      test_header_aidl3, 1 }, /* Short packet */
+    { "aidl3/short/2", "aidl3", GBINDER_DEFAULT_BINDER, NULL,
+      test_header_aidl3, 5 }, /* Short packet */
+    { "aidl3/short/3", "adl3", GBINDER_DEFAULT_BINDER, NULL,
+      test_header_aidl3, 9 }, /* Short packet */
     { "hidl/ok", "hidl", GBINDER_DEFAULT_HWBINDER, "foo",
       TEST_ARRAY_AND_SIZE(test_header_hidl) },
     { "hidl/short", "hidl", GBINDER_DEFAULT_HWBINDER, NULL,
@@ -166,6 +184,9 @@ test_device(
     void)
 {
     const GBinderRpcProtocol* p;
+    TestConfig config;
+
+    test_config_init(&config, "");
 
     p = gbinder_rpc_protocol_for_device(NULL);
     g_assert(p);
@@ -178,6 +199,8 @@ test_device(
     p = gbinder_rpc_protocol_for_device(GBINDER_DEFAULT_HWBINDER);
     g_assert(p);
     g_assert_cmpstr(p->name, == ,"hidl");
+
+    test_config_cleanup(&config);
 }
 
 /*==========================================================================*
@@ -348,6 +371,7 @@ test_no_header2(
 static const TestData test_no_header_data[] = {
     { "aidl", "aidl", GBINDER_DEFAULT_BINDER },
     { "aidl2", "aidl2", GBINDER_DEFAULT_BINDER },
+    { "aidl3", "aidl3", GBINDER_DEFAULT_BINDER },
 };
 
 /*==========================================================================*

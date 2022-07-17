@@ -1,6 +1,6 @@
 /*
- * Copyright (C) 2018-2020 Jolla Ltd.
- * Copyright (C) 2018-2020 Slava Monich <slava.monich@jolla.com>
+ * Copyright (C) 2018-2022 Jolla Ltd.
+ * Copyright (C) 2018-2022 Slava Monich <slava.monich@jolla.com>
  *
  * You may use this file under the terms of BSD license as follows:
  *
@@ -76,7 +76,15 @@ void
 
 GBinderServiceManager*
 gbinder_servicemanager_new(
-    const char* dev);
+    const char* dev)
+    G_GNUC_WARN_UNUSED_RESULT;
+
+GBinderServiceManager*
+gbinder_servicemanager_new2(
+    const char* dev,
+    const char* sm_protocol,
+    const char* rpc_protocol) /* Since 1.1.20 */
+    G_GNUC_WARN_UNUSED_RESULT;
 
 GBinderServiceManager*
 gbinder_defaultservicemanager_new(
@@ -111,6 +119,10 @@ gbinder_servicemanager_ref(
 void
 gbinder_servicemanager_unref(
     GBinderServiceManager* sm);
+
+const char*
+gbinder_servicemanager_device(
+    GBinderServiceManager* sm); /* Since 1.1.14 */
 
 gboolean
 gbinder_servicemanager_is_present(
@@ -189,7 +201,7 @@ gbinder_servicemanager_remove_handlers(
     gulong* ids,
     guint count); /* Since 1.0.25 */
 
-#define gbinder_servicemanager_remove_all_handlers(r,ids) \
+#define gbinder_servicemanager_remove_all_handlers(sm,ids) \
     gbinder_servicemanager_remove_handlers(sm, ids, G_N_ELEMENTS(ids))
 
 G_END_DECLS

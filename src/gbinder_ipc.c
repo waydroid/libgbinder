@@ -1,6 +1,6 @@
 /*
- * Copyright (C) 2018-2021 Jolla Ltd.
- * Copyright (C) 2018-2021 Slava Monich <slava.monich@jolla.com>
+ * Copyright (C) 2018-2022 Jolla Ltd.
+ * Copyright (C) 2018-2022 Slava Monich <slava.monich@jolla.com>
  *
  * You may use this file under the terms of BSD license as follows:
  *
@@ -58,6 +58,7 @@
 #include <time.h>
 
 typedef struct gbinder_ipc_looper GBinderIpcLooper;
+typedef GObjectClass GBinderIpcClass;
 
 struct gbinder_ipc_priv {
     GBinderIpc* self;
@@ -78,11 +79,12 @@ struct gbinder_ipc_priv {
     GBinderIpcLooper* blocked_loopers;
 };
 
-typedef GObjectClass GBinderIpcClass;
+#define PARENT_CLASS gbinder_ipc_parent_class
+#define THIS_TYPE gbinder_ipc_get_type()
+#define THIS(obj) G_TYPE_CHECK_INSTANCE_CAST(obj, THIS_TYPE, GBinderIpc)
+
+GType THIS_TYPE GBINDER_INTERNAL;
 G_DEFINE_TYPE(GBinderIpc, gbinder_ipc, G_TYPE_OBJECT)
-#define GBINDER_TYPE_IPC (gbinder_ipc_get_type())
-#define GBINDER_IPC(obj) (G_TYPE_CHECK_INSTANCE_CAST((obj), \
-        GBINDER_TYPE_IPC, GBinderIpc))
 
 /*
  * Binder requests are blocking, worker threads are needed in order to
@@ -206,9 +208,6 @@ typedef struct gbinder_ipc_tx_custom {
     GBinderIpcTxFunc fn_custom_done;
     GDestroyNotify fn_custom_destroy;
 } GBinderIpcTxCustom;
-
-GBINDER_INLINE_FUNC const char* gbinder_ipc_name(GBinderIpc* self)
-    { return self->priv->name; }
 
 static
 GBinderIpcLooper*
@@ -429,7 +428,7 @@ void
 gbinder_ipc_looper_free(
     GBinderIpcLooper* looper)
 {
-    if (!looper->joined) {
+    if (!looper->joined && looper->thread != pthread_self()) {
         pthread_join(looper->thread, NULL);
     }
     close(looper->pipefd[0]);
@@ -766,13 +765,13 @@ gbinder_ipc_looper_thread(
     GBinderIpcLooper* looper = data;
     GBinderDriver* driver = looper->driver;
 
+    g_mutex_lock(&looper->mutex);
     pthread_setname_np(looper->thread, looper->name);
     if (gbinder_driver_enter_looper(driver)) {
         struct pollfd pipefd;
         int res;
 
         GDEBUG("Looper %s running", looper->name);
-        g_mutex_lock(&looper->mutex);
         g_atomic_int_set(&looper->started, TRUE);
         g_cond_broadcast(&looper->start_cond);
         g_mutex_unlock(&looper->mutex);
@@ -837,7 +836,6 @@ gbinder_ipc_looper_thread(
             GDEBUG("Looper %s is abandoned", looper->name);
         }
     } else {
-        g_mutex_lock(&looper->mutex);
         g_atomic_int_set(&looper->started, TRUE);
         g_cond_broadcast(&looper->start_cond);
         g_mutex_unlock(&looper->mutex);
@@ -869,6 +867,7 @@ gbinder_ipc_looper_new(
         g_atomic_int_set(&looper->refcount, 1);
         g_cond_init(&looper->start_cond);
         g_mutex_init(&looper->mutex);
+        g_mutex_lock(&looper->mutex);
         looper->name = g_strdup_printf("%s#%u", gbinder_ipc_name(ipc), id);
         looper->handler.f = &handler_functions;
         looper->ipc = ipc;
@@ -877,11 +876,13 @@ gbinder_ipc_looper_new(
             looper)) {
             /* gbinder_ipc_looper_thread() will release this reference: */
             gbinder_ipc_looper_ref(looper);
+            g_mutex_unlock(&looper->mutex);
             GDEBUG("Starting looper %s", looper->name);
             return looper;
         } else {
             GERR("Failed to create looper thread %s", looper->name);
         }
+        g_mutex_unlock(&looper->mutex);
         gbinder_ipc_looper_unref(looper);
     } else {
         GERR("Failed to create looper pipe: %s", strerror(errno));
@@ -1115,6 +1116,23 @@ gbinder_ipc_tx_handler_transact(
 
 static
 void
+gbinder_ipc_invalidate_local_object_locked(
+    GBinderIpc* self,
+    GBinderLocalObject* obj)
+{
+    GBinderIpcPriv* priv = self->priv;
+
+    if (priv->local_objects && g_hash_table_remove(priv->local_objects, obj)) {
+        GVERBOSE_("%p %s", obj, gbinder_ipc_name(self));
+        if (g_hash_table_size(priv->local_objects) == 0) {
+            g_hash_table_unref(priv->local_objects);
+            priv->local_objects = NULL;
+        }
+    }
+}
+
+static
+void
 gbinder_ipc_invalidate_remote_handle_locked(
     GBinderIpc* self,
     guint32 handle)
@@ -1136,6 +1154,20 @@ gbinder_ipc_invalidate_remote_handle_locked(
             }
         }
     }
+}
+
+void
+gbinder_ipc_invalidate_local_object(
+    GBinderIpc* self,
+    GBinderLocalObject* obj)
+{
+    GBinderIpcPriv* priv = self->priv;
+
+    /* Lock */
+    g_mutex_lock(&priv->local_objects_mutex);
+    gbinder_ipc_invalidate_local_object_locked(self, obj);
+    g_mutex_unlock(&priv->local_objects_mutex);
+    /* Unlock */
 }
 
 void
@@ -1181,14 +1213,8 @@ gbinder_ipc_local_object_disposed(
 
     /* Lock */
     g_mutex_lock(&priv->local_objects_mutex);
-    if (obj->object.ref_count == 1 && priv->local_objects) {
-        if (g_hash_table_remove(priv->local_objects, obj)) {
-            GVERBOSE_("%p %s", obj, gbinder_ipc_name(self));
-            if (g_hash_table_size(priv->local_objects) == 0) {
-                g_hash_table_unref(priv->local_objects);
-                priv->local_objects = NULL;
-            }
-        }
+    if (g_atomic_int_get(&obj->object.ref_count) == 1) {
+        gbinder_ipc_invalidate_local_object_locked(self, obj);
     }
     g_mutex_unlock(&priv->local_objects_mutex);
     /* Unlock */
@@ -1201,9 +1227,32 @@ gbinder_ipc_remote_object_disposed(
 {
     GBinderIpcPriv* priv = self->priv;
 
+    /*
+     * Check of ref_count for 1 makes it possible (albeit quite unlikely)
+     * that GBinderRemoteObject still remains in remote_objects table
+     * when it's being finalized.
+     *
+     * For this to happen, other thread must re-reference GBinderRemoteObject
+     * right before we grab the lock here (making ref_count greater than 1)
+     * and then release that reference before g_object_unref() re-checks the
+     * refcount.
+     *
+     * That's why another gbinder_ipc_invalidate_remote_handle() call from
+     * gbinder_remote_object_finalize() is necessary to make sure that stale
+     * object pointer isn't stored in the hashtable.
+     *
+     * We still have to invalidate the handle here because it's the last
+     * point when GObject can be legitimately re-referenced and brought
+     * back to life. Which means that GBinderIpc mutex has to acquired
+     * twice during GBinderRemoteObject destruction.
+     *
+     * The same applies to GBinderLocalObject too, except that it calls
+     * gbinder_ipc_invalidate_local_object() from its finalize() handler.
+     */
+
     /* Lock */
     g_mutex_lock(&priv->remote_objects_mutex);
-    if (obj->object.ref_count == 1) {
+    if (g_atomic_int_get(&obj->object.ref_count) == 1) {
         gbinder_ipc_invalidate_remote_handle_locked(self, obj->handle);
     }
     g_mutex_unlock(&priv->remote_objects_mutex);
@@ -1248,10 +1297,10 @@ gbinder_ipc_priv_get_local_object(
             if (obj) {
                 gbinder_local_object_ref(obj);
             } else {
-                GWARN("Unknown local object %p", pointer);
+                GWARN("Unknown local object %p %s", pointer, priv->name);
             }
         } else {
-            GWARN("Unknown local object %p", pointer);
+            GWARN("Unknown local object %p %s", pointer, priv->name);
         }
         g_mutex_unlock(&priv->local_objects_mutex);
         /* Unlock */
@@ -1295,6 +1344,8 @@ gbinder_ipc_priv_get_remote_object(
         }
         GVERBOSE_("%p handle %u %s", obj, handle, gbinder_ipc_name(self));
         g_hash_table_replace(priv->remote_objects, key, obj);
+    } else {
+        GWARN("Unknown handle %u %s", handle, priv->name);
     }
     g_mutex_unlock(&priv->remote_objects_mutex);
     /* Unlock */
@@ -1792,13 +1843,15 @@ const GBinderIpcSyncApi gbinder_ipc_sync_main = {
 
 GBinderIpc*
 gbinder_ipc_new(
-    const char* dev)
+    const char* dev,
+    const char* protocol_name)
 {
     GBinderIpc* self = NULL;
-    const GBinderRpcProtocol* protocol;
+    const GBinderRpcProtocol* protocol = (protocol_name ?
+        gbinder_rpc_protocol_by_name(protocol_name) : NULL);
 
     if (!dev || !dev[0]) dev = GBINDER_DEFAULT_BINDER;
-    protocol = gbinder_rpc_protocol_for_device(dev); /* Never returns NULL */
+    if (!protocol) protocol = gbinder_rpc_protocol_for_device(dev);
 
     /* Lock */
     pthread_mutex_lock(&gbinder_ipc_mutex);
@@ -1813,7 +1866,7 @@ gbinder_ipc_new(
         if (driver) {
             GBinderIpcPriv* priv;
 
-            self = g_object_new(GBINDER_TYPE_IPC, NULL);
+            self = g_object_new(THIS_TYPE, NULL);
             priv = self->priv;
             self->driver = driver;
             self->dev = priv->key = g_strdup(dev);
@@ -1838,7 +1891,7 @@ gbinder_ipc_ref(
     GBinderIpc* self)
 {
     if (G_LIKELY(self)) {
-        g_object_ref(GBINDER_IPC(self));
+        g_object_ref(THIS(self));
         return self;
     } else {
         return NULL;
@@ -1850,8 +1903,15 @@ gbinder_ipc_unref(
     GBinderIpc* self)
 {
     if (G_LIKELY(self)) {
-        g_object_unref(GBINDER_IPC(self));
+        g_object_unref(THIS(self));
     }
+}
+
+const char*
+gbinder_ipc_name(
+    GBinderIpc* self)
+{
+    return G_LIKELY(self) ? self->priv->name : NULL;
 }
 
 GBinderObjectRegistry*
@@ -1981,7 +2041,7 @@ gbinder_ipc_init(
         .get_local = gbinder_ipc_object_registry_get_local,
         .get_remote = gbinder_ipc_object_registry_get_remote
     };
-    GBinderIpcPriv* priv = G_TYPE_INSTANCE_GET_PRIVATE(self, GBINDER_TYPE_IPC,
+    GBinderIpcPriv* priv = G_TYPE_INSTANCE_GET_PRIVATE(self, THIS_TYPE,
         GBinderIpcPriv);
 
     g_mutex_init(&priv->looper_mutex);
@@ -2032,7 +2092,7 @@ void
 gbinder_ipc_dispose(
     GObject* object)
 {
-    GBinderIpc* self = GBINDER_IPC(object);
+    GBinderIpc* self = THIS(object);
 
     GVERBOSE_("%s", self->dev);
     /* Lock */
@@ -2056,7 +2116,7 @@ gbinder_ipc_dispose(
     /* Unlock */
 
     gbinder_ipc_stop_loopers(self);
-    G_OBJECT_CLASS(gbinder_ipc_parent_class)->finalize(object);
+    G_OBJECT_CLASS(PARENT_CLASS)->dispose(object);
 }
 
 static
@@ -2064,7 +2124,7 @@ void
 gbinder_ipc_finalize(
     GObject* object)
 {
-    GBinderIpc* self = GBINDER_IPC(object);
+    GBinderIpc* self = THIS(object);
     GBinderIpcPriv* priv = self->priv;
 
     GASSERT(!priv->local_objects);
@@ -2079,7 +2139,7 @@ gbinder_ipc_finalize(
     g_hash_table_unref(priv->tx_table);
     gbinder_driver_unref(self->driver);
     g_free(priv->key);
-    G_OBJECT_CLASS(gbinder_ipc_parent_class)->finalize(object);
+    G_OBJECT_CLASS(PARENT_CLASS)->finalize(object);
 }
 
 static
@@ -2115,7 +2175,7 @@ gbinder_ipc_exit()
     /* Unlock */
 
     for (i = ipcs; i; i = i->next) {
-        GBinderIpc* ipc = GBINDER_IPC(i->data);
+        GBinderIpc* ipc = THIS(i->data);
         GBinderIpcPriv* priv = ipc->priv;
         GThreadPool* pool = priv->tx_pool;
         GSList* local_objs = NULL;

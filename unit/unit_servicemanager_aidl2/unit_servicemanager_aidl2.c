@@ -1,6 +1,6 @@
 /*
- * Copyright (C) 2020-2021 Jolla Ltd.
- * Copyright (C) 2020-2021 Slava Monich <slava.monich@jolla.com>
+ * Copyright (C) 2020-2022 Jolla Ltd.
+ * Copyright (C) 2020-2022 Slava Monich <slava.monich@jolla.com>
  *
  * You may use this file under the terms of BSD license as follows:
  *
@@ -53,7 +53,8 @@ static const char TMP_DIR_TEMPLATE[] =
 GType
 gbinder_servicemanager_hidl_get_type()
 {
-    /* Avoid pulling in gbinder_servicemanager_hidl object */
+    /* Dummy function to avoid pulling in gbinder_servicemanager_hidl */
+    g_assert_not_reached();
     return 0;
 }
 
@@ -174,7 +175,7 @@ servicemanager_aidl2_new(
 {
     ServiceManagerAidl2* self = g_object_new(SERVICE_MANAGER_AIDL2_TYPE, NULL);
     GBinderLocalObject* obj = GBINDER_LOCAL_OBJECT(self);
-    GBinderIpc* ipc = gbinder_ipc_new(dev);
+    GBinderIpc* ipc = gbinder_ipc_new(dev, NULL);
     const int fd = gbinder_driver_fd(ipc->driver);
 
     self->handle_on_looper_thread = handle_on_looper_thread;
@@ -304,7 +305,7 @@ test_context_init(
     gbinder_config_dir = test->config_subdir; /* Doesn't exist */
     gbinder_config_file = test->config_file;
 
-    ipc = gbinder_ipc_new(dev);
+    ipc = gbinder_ipc_new(dev, NULL);
     test->fd = gbinder_driver_fd(ipc->driver);
     test->object = gbinder_local_object_new(ipc, NULL, NULL, NULL);
 
@@ -435,6 +436,9 @@ test_list()
 
 int main(int argc, char* argv[])
 {
+    G_GNUC_BEGIN_IGNORE_DEPRECATIONS;
+    g_type_init();
+    G_GNUC_END_IGNORE_DEPRECATIONS;
     g_test_init(&argc, &argv, NULL);
     g_test_add_func(TEST_("get"), test_get);
     g_test_add_func(TEST_("list"), test_list);

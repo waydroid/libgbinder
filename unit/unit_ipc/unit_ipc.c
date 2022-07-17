@@ -1,6 +1,6 @@
 /*
- * Copyright (C) 2018-2021 Jolla Ltd.
- * Copyright (C) 2018-2021 Slava Monich <slava.monich@jolla.com>
+ * Copyright (C) 2018-2022 Jolla Ltd.
+ * Copyright (C) 2018-2022 Slava Monich <slava.monich@jolla.com>
  *
  * You may use this file under the terms of BSD license as follows:
  *
@@ -121,12 +121,22 @@ test_basic_find_none(
 }
 
 static
+gboolean
+test_basic_find(
+    GBinderLocalObject* obj,
+    void* user_data)
+{
+    return obj == user_data;
+}
+
+static
 void
 test_basic(
     void)
 {
-    GBinderIpc* ipc = gbinder_ipc_new(GBINDER_DEFAULT_BINDER);
-    GBinderIpc* ipc2 = gbinder_ipc_new(GBINDER_DEFAULT_HWBINDER);
+    GBinderIpc* ipc = gbinder_ipc_new(GBINDER_DEFAULT_BINDER, NULL);
+    GBinderIpc* ipc2 = gbinder_ipc_new(GBINDER_DEFAULT_HWBINDER, NULL);
+    GBinderLocalObject* obj;
 
     g_assert(ipc);
     g_assert(ipc2);
@@ -136,16 +146,22 @@ test_basic(
 
     g_assert(!gbinder_ipc_find_local_object(NULL, test_basic_find_none, NULL));
     g_assert(!gbinder_ipc_find_local_object(ipc, test_basic_find_none, NULL));
+    obj = gbinder_local_object_new(ipc, NULL, NULL, NULL);
+    g_assert(obj);
+    g_assert(!gbinder_ipc_find_local_object(ipc, test_basic_find_none, NULL));
+    g_assert(gbinder_ipc_find_local_object(ipc, test_basic_find, obj) == obj);
+    gbinder_local_object_unref(obj); /* Above call added a reference */
+    gbinder_local_object_unref(obj);
 
     /* Second gbinder_ipc_new returns the same (default) object */
-    g_assert(gbinder_ipc_new(NULL) == ipc);
-    g_assert(gbinder_ipc_new("") == ipc);
+    g_assert(gbinder_ipc_new(NULL, NULL) == ipc);
+    g_assert(gbinder_ipc_new("", NULL) == ipc);
     gbinder_ipc_unref(ipc);
     gbinder_ipc_unref(ipc);
     gbinder_ipc_unref(ipc);
 
     /* Invalid path */
-    g_assert(!gbinder_ipc_new("invalid path"));
+    g_assert(!gbinder_ipc_new("invalid path", NULL));
 
     gbinder_ipc_exit();
     test_binder_exit_wait(&test_opt, NULL);
@@ -173,7 +189,7 @@ void
 test_async_oneway(
     void)
 {
-    GBinderIpc* ipc = gbinder_ipc_new(GBINDER_DEFAULT_BINDER);
+    GBinderIpc* ipc = gbinder_ipc_new(GBINDER_DEFAULT_BINDER, NULL);
     const GBinderIo* io = gbinder_driver_io(ipc->driver);
     const int fd = gbinder_driver_fd(ipc->driver);
     GBinderLocalRequest* req = gbinder_local_request_new(io, NULL);
@@ -200,7 +216,7 @@ void
 test_sync_oneway(
     void)
 {
-    GBinderIpc* ipc = gbinder_ipc_new(GBINDER_DEFAULT_BINDER);
+    GBinderIpc* ipc = gbinder_ipc_new(GBINDER_DEFAULT_BINDER, NULL);
     const GBinderIo* io = gbinder_driver_io(ipc->driver);
     const int fd = gbinder_driver_fd(ipc->driver);
     GBinderLocalRequest* req = gbinder_local_request_new(io, NULL);
@@ -222,7 +238,7 @@ void
 test_sync_reply_ok_status(
     int* status)
 {
-    GBinderIpc* ipc = gbinder_ipc_new(GBINDER_DEFAULT_BINDER);
+    GBinderIpc* ipc = gbinder_ipc_new(GBINDER_DEFAULT_BINDER, NULL);
     const GBinderIo* io = gbinder_driver_io(ipc->driver);
     const int fd = gbinder_driver_fd(ipc->driver);
     GBinderLocalRequest* req = gbinder_local_request_new(io, NULL);
@@ -279,7 +295,7 @@ void
 test_sync_reply_error(
     void)
 {
-    GBinderIpc* ipc = gbinder_ipc_new(GBINDER_DEFAULT_BINDER);
+    GBinderIpc* ipc = gbinder_ipc_new(GBINDER_DEFAULT_BINDER, NULL);
     const GBinderIo* io = gbinder_driver_io(ipc->driver);
     const int fd = gbinder_driver_fd(ipc->driver);
     GBinderLocalRequest* req = gbinder_local_request_new(io, NULL);
@@ -348,7 +364,7 @@ void
 test_transact_ok(
     void)
 {
-    GBinderIpc* ipc = gbinder_ipc_new(GBINDER_DEFAULT_BINDER);
+    GBinderIpc* ipc = gbinder_ipc_new(GBINDER_DEFAULT_BINDER, NULL);
     const GBinderIo* io = gbinder_driver_io(ipc->driver);
     const int fd = gbinder_driver_fd(ipc->driver);
     GBinderLocalRequest* req = gbinder_local_request_new(io, NULL);
@@ -407,7 +423,7 @@ void
 test_transact_dead(
     void)
 {
-    GBinderIpc* ipc = gbinder_ipc_new(GBINDER_DEFAULT_BINDER);
+    GBinderIpc* ipc = gbinder_ipc_new(GBINDER_DEFAULT_BINDER, NULL);
     const GBinderIo* io = gbinder_driver_io(ipc->driver);
     const int fd = gbinder_driver_fd(ipc->driver);
     GBinderLocalRequest* req = gbinder_local_request_new(io, NULL);
@@ -455,7 +471,7 @@ void
 test_transact_failed(
     void)
 {
-    GBinderIpc* ipc = gbinder_ipc_new(GBINDER_DEFAULT_BINDER);
+    GBinderIpc* ipc = gbinder_ipc_new(GBINDER_DEFAULT_BINDER, NULL);
     const GBinderIo* io = gbinder_driver_io(ipc->driver);
     const int fd = gbinder_driver_fd(ipc->driver);
     GBinderLocalRequest* req = gbinder_local_request_new(io, NULL);
@@ -505,7 +521,7 @@ void
 test_transact_status(
     void)
 {
-    GBinderIpc* ipc = gbinder_ipc_new(GBINDER_DEFAULT_BINDER);
+    GBinderIpc* ipc = gbinder_ipc_new(GBINDER_DEFAULT_BINDER, NULL);
     const GBinderIo* io = gbinder_driver_io(ipc->driver);
     const int fd = gbinder_driver_fd(ipc->driver);
     GBinderLocalRequest* req = gbinder_local_request_new(io, NULL);
@@ -548,7 +564,7 @@ void
 test_transact_custom(
     void)
 {
-    GBinderIpc* ipc = gbinder_ipc_new(GBINDER_DEFAULT_BINDER);
+    GBinderIpc* ipc = gbinder_ipc_new(GBINDER_DEFAULT_BINDER, NULL);
     GMainLoop* loop = g_main_loop_new(NULL, FALSE);
     gulong id = gbinder_ipc_transact_custom(ipc, NULL,
         test_transact_custom_done, NULL, loop);
@@ -580,7 +596,7 @@ void
 test_transact_custom2(
     void)
 {
-    GBinderIpc* ipc = gbinder_ipc_new(GBINDER_DEFAULT_BINDER);
+    GBinderIpc* ipc = gbinder_ipc_new(GBINDER_DEFAULT_BINDER, NULL);
     GMainLoop* loop = g_main_loop_new(NULL, FALSE);
     gulong id = gbinder_ipc_transact_custom(ipc, NULL, NULL,
         test_transact_custom_destroy, loop);
@@ -613,7 +629,7 @@ void
 test_transact_custom3(
     void)
 {
-    GBinderIpc* ipc = gbinder_ipc_new(GBINDER_DEFAULT_BINDER);
+    GBinderIpc* ipc = gbinder_ipc_new(GBINDER_DEFAULT_BINDER, NULL);
     GMainLoop* loop = g_main_loop_new(NULL, FALSE);
     /* Reusing test_transact_cancel_done and test_transact_cancel_destroy */
     gulong id = gbinder_ipc_transact_custom(ipc, test_transact_custom3_exec,
@@ -663,7 +679,7 @@ void
 test_transact_cancel(
     void)
 {
-    GBinderIpc* ipc = gbinder_ipc_new(GBINDER_DEFAULT_BINDER);
+    GBinderIpc* ipc = gbinder_ipc_new(GBINDER_DEFAULT_BINDER, NULL);
     GMainLoop* loop = g_main_loop_new(NULL, FALSE);
     gulong id = gbinder_ipc_transact_custom(ipc, test_transact_cancel_exec,
         test_transact_cancel_done, test_transact_cancel_destroy, loop);
@@ -709,7 +725,7 @@ void
 test_transact_cancel2(
     void)
 {
-    GBinderIpc* ipc = gbinder_ipc_new(GBINDER_DEFAULT_BINDER);
+    GBinderIpc* ipc = gbinder_ipc_new(GBINDER_DEFAULT_BINDER, NULL);
     GMainLoop* loop = g_main_loop_new(NULL, FALSE);
     /* Reusing test_transact_cancel_done and test_transact_cancel_destroy */
     gulong id = gbinder_ipc_transact_custom(ipc, test_transact_cancel2_exec,
@@ -756,10 +772,10 @@ test_transact_2way_incoming_proc(
 
 static
 void
-test_transact_2way(
+test_transact_2way_run(
     void)
 {
-    GBinderIpc* ipc = gbinder_ipc_new(GBINDER_DEFAULT_BINDER);
+    GBinderIpc* ipc = gbinder_ipc_new(GBINDER_DEFAULT_BINDER, NULL);
     const GBinderIo* io = gbinder_driver_io(ipc->driver);
     const int fd = gbinder_driver_fd(ipc->driver);
     const char* dev = gbinder_driver_dev(ipc->driver);
@@ -813,6 +829,14 @@ test_transact_2way(
     g_main_loop_unref(loop);
 }
 
+static
+void
+test_transact_2way(
+    void)
+{
+    test_run_in_context(&test_opt, test_transact_2way_run);
+}
+
 /*==========================================================================*
  * transact_unhandled
  *==========================================================================*/
@@ -836,7 +860,7 @@ void
 test_transact_unhandled_run(
     void)
 {
-    GBinderIpc* ipc = gbinder_ipc_new(GBINDER_DEFAULT_BINDER);
+    GBinderIpc* ipc = gbinder_ipc_new(GBINDER_DEFAULT_BINDER, NULL);
     GBinderDriver* driver = ipc->driver;
     GMainLoop* loop = g_main_loop_new(NULL, FALSE);
     GBinderLocalRequest* req = gbinder_driver_local_request_new_ping(driver);
@@ -897,7 +921,7 @@ void
 test_transact_incoming_run(
     void)
 {
-    GBinderIpc* ipc = gbinder_ipc_new(GBINDER_DEFAULT_BINDER);
+    GBinderIpc* ipc = gbinder_ipc_new(GBINDER_DEFAULT_BINDER, NULL);
     const GBinderIo* io = gbinder_driver_io(ipc->driver);
     const int fd = gbinder_driver_fd(ipc->driver);
     const char* dev = gbinder_driver_dev(ipc->driver);
@@ -978,7 +1002,7 @@ void
 test_transact_status_reply_run(
     void)
 {
-    GBinderIpc* ipc = gbinder_ipc_new(GBINDER_DEFAULT_BINDER);
+    GBinderIpc* ipc = gbinder_ipc_new(GBINDER_DEFAULT_BINDER, NULL);
     const GBinderIo* io = gbinder_driver_io(ipc->driver);
     const int fd = gbinder_driver_fd(ipc->driver);
     const char* dev = gbinder_driver_dev(ipc->driver);
@@ -1095,7 +1119,7 @@ void
 test_transact_async_run(
     void)
 {
-    GBinderIpc* ipc = gbinder_ipc_new(GBINDER_DEFAULT_BINDER);
+    GBinderIpc* ipc = gbinder_ipc_new(GBINDER_DEFAULT_BINDER, NULL);
     const GBinderIo* io = gbinder_driver_io(ipc->driver);
     const int fd = gbinder_driver_fd(ipc->driver);
     const char* dev = gbinder_driver_dev(ipc->driver);
@@ -1178,7 +1202,7 @@ void
 test_transact_async_sync_run(
     void)
 {
-    GBinderIpc* ipc = gbinder_ipc_new(GBINDER_DEFAULT_BINDER);
+    GBinderIpc* ipc = gbinder_ipc_new(GBINDER_DEFAULT_BINDER, NULL);
     const GBinderIo* io = gbinder_driver_io(ipc->driver);
     const int fd = gbinder_driver_fd(ipc->driver);
     const char* dev = gbinder_driver_dev(ipc->driver);
@@ -1242,7 +1266,7 @@ void
 test_drop_remote_refs_run(
     void)
 {
-    GBinderIpc* ipc = gbinder_ipc_new(GBINDER_DEFAULT_BINDER);
+    GBinderIpc* ipc = gbinder_ipc_new(GBINDER_DEFAULT_BINDER, NULL);
     GBinderLocalObject* obj = gbinder_local_object_new
         (ipc, NULL, NULL, NULL);
     GMainLoop* loop = g_main_loop_new(NULL, FALSE);
@@ -1293,7 +1317,7 @@ void
 test_cancel_on_exit(
     void)
 {
-    GBinderIpc* ipc = gbinder_ipc_new(GBINDER_DEFAULT_BINDER);
+    GBinderIpc* ipc = gbinder_ipc_new(GBINDER_DEFAULT_BINDER, NULL);
     const GBinderIo* io = gbinder_driver_io(ipc->driver);
     GBinderLocalRequest* req = gbinder_local_request_new(io, NULL);
     GMainLoop* loop = g_main_loop_new(NULL, FALSE);
@@ -1320,6 +1344,9 @@ test_cancel_on_exit(
 
 int main(int argc, char* argv[])
 {
+    G_GNUC_BEGIN_IGNORE_DEPRECATIONS;
+    g_type_init();
+    G_GNUC_END_IGNORE_DEPRECATIONS;
     g_test_init(&argc, &argv, NULL);
     g_test_add_func(TEST_("null"), test_null);
     g_test_add_func(TEST_("basic"), test_basic);

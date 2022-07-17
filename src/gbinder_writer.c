@@ -1,6 +1,6 @@
 /*
- * Copyright (C) 2018-2021 Jolla Ltd.
- * Copyright (C) 2018-2021 Slava Monich <slava.monich@jolla.com>
+ * Copyright (C) 2018-2022 Jolla Ltd.
+ * Copyright (C) 2018-2022 Slava Monich <slava.monich@jolla.com>
  *
  * You may use this file under the terms of BSD license as follows:
  *
@@ -32,6 +32,7 @@
 
 #include "gbinder_writer_p.h"
 #include "gbinder_buffer_p.h"
+#include "gbinder_fmq_p.h"
 #include "gbinder_local_object.h"
 #include "gbinder_object_converter.h"
 #include "gbinder_io.h"
@@ -40,6 +41,7 @@
 #include <gutil_intarray.h>
 #include <gutil_macros.h>
 #include <gutil_strv.h>
+#include <gutil_misc.h>
 
 #include <unistd.h>
 #include <stdint.h>
@@ -154,30 +156,6 @@ gbinder_writer_data_record_offset(
     gutil_int_array_append(data->offsets, offset);
 }
 
-static
-void
-gbinder_writer_data_write_buffer_object(
-    GBinderWriterData* data,
-    const void* ptr,
-    gsize size,
-    const GBinderParent* parent)
-{
-    GByteArray* buf = data->bytes;
-    const guint offset = buf->len;
-    guint n;
-
-    /* Preallocate enough space */
-    g_byte_array_set_size(buf, offset + GBINDER_MAX_BUFFER_OBJECT_SIZE);
-    /* Write the object */
-    n = data->io->encode_buffer_object(buf->data + offset, ptr, size, parent);
-    /* Fix the data size */
-    g_byte_array_set_size(buf, offset + n);
-    /* Record the offset */
-    gbinder_writer_data_record_offset(data, offset);
-    /* The driver seems to require each buffer to be 8-byte aligned */
-    data->buffers_size += G_ALIGN8(size);
-}
-
 void
 gbinder_writer_init(
     GBinderWriter* self,
@@ -187,12 +165,35 @@ gbinder_writer_init(
     gbinder_writer_cast(self)->data = data;
 }
 
+const void*
+gbinder_writer_get_data(
+    GBinderWriter* self,
+    gsize* size) /* Since 1.1.14 */
+{
+    GBinderWriterData* data = gbinder_writer_data(self);
+
+    if (G_LIKELY(data)) {
+        GByteArray* buf = data->bytes;
+
+        if (size) {
+            *size = buf->len;
+        }
+        return buf->data;
+    } else {
+        if (size) {
+            *size = 0;
+        }
+        return NULL;
+    }
+}
+
 gsize
 gbinder_writer_bytes_written(
     GBinderWriter* self) /* since 1.0.21 */
 {
     GBinderWriterData* data = gbinder_writer_data(self);
-    return data->bytes->len;
+
+    return G_LIKELY(data) ? data->bytes->len : 0;
 }
 
 void
@@ -212,12 +213,34 @@ gbinder_writer_data_append_bool(
     GBinderWriterData* data,
     gboolean value)
 {
-    guint8 padded[4];
+    /* Primitive values are padded to 4-byte boundary */
+    gbinder_writer_data_append_int32(data, value != FALSE);
+}
 
-    /* Boolean values are padded to 4-byte boundary */
-    padded[0] = (value != FALSE);
-    padded[1] = padded[2] = padded[3] = 0;
-    g_byte_array_append(data->bytes, padded, sizeof(padded));
+void
+gbinder_writer_append_int8(
+    GBinderWriter* self,
+    guint8 value) /* Since 1.1.15 */
+{
+    GBinderWriterData* data = gbinder_writer_data(self);
+
+    if (G_LIKELY(data)) {
+        /* Primitive values are padded to 4-byte boundary */
+        gbinder_writer_data_append_int32(data, value);
+    }
+}
+
+void
+gbinder_writer_append_int16(
+    GBinderWriter* self,
+    guint16 value) /* Since 1.1.15 */
+{
+    GBinderWriterData* data = gbinder_writer_data(self);
+
+    if (G_LIKELY(data)) {
+        /* Primitive values are padded to 4-byte boundary */
+        gbinder_writer_data_append_int32(data, value);
+    }
 }
 
 void
@@ -581,17 +604,6 @@ gbinder_writer_append_bytes(
 }
 
 static
-guint
-gbinder_writer_data_prepare(
-    GBinderWriterData* data)
-{
-    if (!data->offsets) {
-        data->offsets = gutil_int_array_new();
-    }
-    return data->offsets->count;
-}
-
-static
 void
 gbinder_writer_data_close_fd(
     gpointer data)
@@ -603,7 +615,6 @@ gbinder_writer_data_close_fd(
     }
 }
 
-static
 void
 gbinder_writer_data_append_fd(
     GBinderWriterData* data,
@@ -645,6 +656,50 @@ gbinder_writer_append_fd(
     }
 }
 
+void
+gbinder_writer_data_append_fda_object(
+    GBinderWriterData* data,
+    const GBinderFds *fds,
+    const GBinderParent* parent)
+{
+    GByteArray* buf = data->bytes;
+    const guint offset = buf->len;
+    guint written;
+
+    /* Preallocate enough space */
+    g_byte_array_set_size(buf, offset + GBINDER_MAX_BINDER_OBJECT_SIZE);
+
+    written = data->io->encode_fda_object(buf->data + offset, fds, parent);
+
+    /* Fix the data size */
+    g_byte_array_set_size(buf, offset + written);
+    /* Record the offset */
+    gbinder_writer_data_record_offset(data, offset);
+}
+
+void
+gbinder_writer_data_append_fds(
+    GBinderWriterData* data,
+    const GBinderFds *fds,
+    const GBinderParent* parent)
+{
+    if (fds) {
+        /* Size, fds data buffer and fd_array_object */
+        const gsize fds_total = sizeof(GBinderFds) +
+            sizeof(int) * (fds->num_fds + fds->num_ints);
+        GBinderParent fds_parent;
+
+        gbinder_writer_data_append_int64(data, fds_total);
+        fds_parent.index = gbinder_writer_data_append_buffer_object(data,
+            fds, fds_total, parent);
+        fds_parent.offset = sizeof(GBinderFds);
+        gbinder_writer_data_append_fda_object(data, fds, &fds_parent);
+    } else {
+        /* If the pointer is null only write zero size */
+        gbinder_writer_data_append_int64(data, 0);
+    }
+}
+
 guint
 gbinder_writer_append_buffer_object_with_parent(
     GBinderWriter* self,
@@ -681,10 +736,67 @@ gbinder_writer_data_append_buffer_object(
     gsize size,
     const GBinderParent* parent)
 {
-    guint index = gbinder_writer_data_prepare(data);
+    const guint index = data->offsets ? data->offsets->count : 0;
+    GByteArray* buf = data->bytes;
+    const guint offset = buf->len;
+    guint n;
 
-    gbinder_writer_data_write_buffer_object(data, ptr, size, parent);
+    /* Preallocate enough space */
+    g_byte_array_set_size(buf, offset + GBINDER_MAX_BUFFER_OBJECT_SIZE);
+    /* Write the object */
+    n = data->io->encode_buffer_object(buf->data + offset, ptr, size, parent);
+    /* Fix the data size */
+    g_byte_array_set_size(buf, offset + n);
+    /* Record the offset */
+    gbinder_writer_data_record_offset(data, offset);
+    /* The driver seems to require each buffer to be 8-byte aligned */
+    data->buffers_size += G_ALIGN8(size);
     return index;
+}
+
+/*
+ * This is supposed to be used to write aidl parcelables, and is not
+ * guaranteed to work on any other kind of parcelable.
+ */
+void
+gbinder_writer_append_parcelable(
+    GBinderWriter* self,
+    const void* buf,
+    gsize len) /* Since 1.1.19 */
+{
+    GBinderWriterData* data = gbinder_writer_data(self);
+
+    if (G_LIKELY(data)) {
+        gbinder_writer_data_append_parcelable(data, buf, len);
+    }
+}
+
+/*
+ * This is compatible with aidl parcelables, and is not guaranteed to work
+ * with any other kind of parcelable.
+ */
+void
+gbinder_writer_data_append_parcelable(
+    GBinderWriterData* data,
+    const void* ptr,
+    gsize size)
+{
+    if (ptr) {
+        /* Non-null */
+        gbinder_writer_data_append_int32(data, 1);
+
+        /*
+         * Write the parcelable size, taking in account the size of this
+         * integer as well.
+         */
+        gbinder_writer_data_append_int32(data, size + sizeof(gint32));
+
+        /* Append the parcelable data */
+        g_byte_array_append(data->bytes, ptr, size);
+    } else {
+        /* Null */
+        gbinder_writer_data_append_int32(data, 0);
+    }
 }
 
 void
@@ -700,6 +812,21 @@ gbinder_writer_append_hidl_string(
 }
 
 void
+gbinder_writer_append_hidl_string_copy(
+    GBinderWriter* self,
+    const char* str) /* Since 1.1.13 */
+{
+    GBinderWriterData* data = gbinder_writer_data(self);
+
+    if (G_LIKELY(data)) {
+        static const char empty[] = "";
+
+        gbinder_writer_data_append_hidl_string(data, str ? (str[0] ?
+            gbinder_writer_strdup(self, str) : empty) : NULL);
+    }
+}
+
+void
 gbinder_writer_data_append_hidl_vec(
     GBinderWriterData* data,
     const void* base,
@@ -709,11 +836,7 @@ gbinder_writer_data_append_hidl_vec(
     GBinderParent vec_parent;
     GBinderHidlVec* vec = g_new0(GBinderHidlVec, 1);
     const gsize total = count * elemsize;
-    void* buf = g_memdup(base, total);
-
-    /* Prepare parent descriptor for the string data */
-    vec_parent.index = gbinder_writer_data_prepare(data);
-    vec_parent.offset = GBINDER_HIDL_VEC_BUFFER_OFFSET;
+    void* buf = gutil_memdup(base, total);
 
     /* Fill in the vector descriptor */
     if (buf) {
@@ -725,8 +848,10 @@ gbinder_writer_data_append_hidl_vec(
     data->cleanup = gbinder_cleanup_add(data->cleanup, g_free, vec);
 
     /* Every vector, even the one without data, requires two buffer objects */
-    gbinder_writer_data_write_buffer_object(data, vec, sizeof(*vec), NULL);
-    gbinder_writer_data_write_buffer_object(data, buf, total, &vec_parent);
+    vec_parent.offset = GBINDER_HIDL_VEC_BUFFER_OFFSET;
+    vec_parent.index = gbinder_writer_data_append_buffer_object(data,
+        vec, sizeof(*vec), NULL);
+    gbinder_writer_data_append_buffer_object(data, buf, total, &vec_parent);
 }
 
 void
@@ -752,10 +877,6 @@ gbinder_writer_data_append_hidl_string(
     GBinderHidlString* hidl_string = g_new0(GBinderHidlString, 1);
     const gsize len = str ? strlen(str) : 0;
 
-    /* Prepare parent descriptor for the string data */
-    str_parent.index = gbinder_writer_data_prepare(data);
-    str_parent.offset = GBINDER_HIDL_STRING_BUFFER_OFFSET;
-
     /* Fill in the string descriptor and store it */
     hidl_string->data.str = str;
     hidl_string->len = len;
@@ -763,17 +884,18 @@ gbinder_writer_data_append_hidl_string(
     data->cleanup = gbinder_cleanup_add(data->cleanup, g_free, hidl_string);
 
     /* Write the buffer object pointing to the string descriptor */
-    gbinder_writer_data_write_buffer_object(data, hidl_string,
-        sizeof(*hidl_string), NULL);
+    str_parent.offset = GBINDER_HIDL_STRING_BUFFER_OFFSET;
+    str_parent.index = gbinder_writer_data_append_buffer_object(data,
+        hidl_string, sizeof(*hidl_string), NULL);
 
     if (str) {
         /* Write the buffer pointing to the string data including the
          * NULL terminator, referencing string descriptor as a parent. */
-        gbinder_writer_data_write_buffer_object(data, str, len+1, &str_parent);
+        gbinder_writer_data_append_buffer_object(data, str, len+1, &str_parent);
         GVERBOSE_("\"%s\" %u %u %u", str, (guint)len, (guint)str_parent.index,
             (guint)data->buffers_size);
     } else {
-        gbinder_writer_data_write_buffer_object(data, NULL, 0, &str_parent);
+        gbinder_writer_data_append_buffer_object(data, NULL, 0, &str_parent);
     }
 }
 
@@ -806,10 +928,6 @@ gbinder_writer_data_append_hidl_string_vec(
         count = gutil_strv_length((char**)strv);
     }
 
-    /* Prepare parent descriptor for the vector data */
-    vec_parent.index = gbinder_writer_data_prepare(data);
-    vec_parent.offset = GBINDER_HIDL_VEC_BUFFER_OFFSET;
-
     /* Fill in the vector descriptor */
     if (count > 0) {
         strings = g_new0(GBinderHidlString, count);
@@ -832,7 +950,10 @@ gbinder_writer_data_append_hidl_string_vec(
     }
 
     /* Write the vector object */
-    gbinder_writer_data_write_buffer_object(data, vec, sizeof(*vec), NULL);
+    vec_parent.offset = GBINDER_HIDL_VEC_BUFFER_OFFSET;
+    vec_parent.index = gbinder_writer_data_append_buffer_object(data,
+        vec, sizeof(*vec), NULL);
+
     if (strings) {
         GBinderParent str_parent;
 
@@ -841,7 +962,7 @@ gbinder_writer_data_append_hidl_string_vec(
         str_parent.offset = GBINDER_HIDL_STRING_BUFFER_OFFSET;
 
         /* Write the vector data (it's parent for the string data) */
-        gbinder_writer_data_write_buffer_object(data, strings,
+        gbinder_writer_data_append_buffer_object(data, strings,
             sizeof(*strings) * count, &vec_parent);
 
         /* Write the string data */
@@ -849,7 +970,7 @@ gbinder_writer_data_append_hidl_string_vec(
             GBinderHidlString* hidl_str = strings + i;
 
             if (hidl_str->data.str) {
-                gbinder_writer_data_write_buffer_object(data,
+                gbinder_writer_data_append_buffer_object(data,
                     hidl_str->data.str, hidl_str->len + 1, &str_parent);
                 GVERBOSE_("%d. \"%s\" %u %u %u", i + 1, hidl_str->data.str,
                     (guint)hidl_str->len, (guint)str_parent.index,
@@ -857,13 +978,13 @@ gbinder_writer_data_append_hidl_string_vec(
             } else {
                 GVERBOSE_("%d. NULL %u %u %u", i + 1, (guint)hidl_str->len,
                     (guint)str_parent.index, (guint)data->buffers_size);
-                gbinder_writer_data_write_buffer_object(data, NULL, 0,
+                gbinder_writer_data_append_buffer_object(data, NULL, 0,
                     &str_parent);
             }
             str_parent.offset += sizeof(GBinderHidlString);
         }
     } else {
-        gbinder_writer_data_write_buffer_object(data, NULL, 0, &vec_parent);
+        gbinder_writer_data_append_buffer_object(data, NULL, 0, &vec_parent);
     }
 }
 
@@ -940,6 +1061,67 @@ gbinder_writer_append_byte_array(
     }
 }
 
+#if GBINDER_FMQ_SUPPORTED
+
+static
+void
+gbinder_writer_data_append_fmq_descriptor(
+    GBinderWriterData* data,
+    const GBinderFmq* queue)
+{
+    GBinderParent parent;
+    GBinderMQDescriptor* desc = gbinder_fmq_get_descriptor(queue);
+    GBinderMQDescriptor* mqdesc = gutil_memdup(desc,
+        sizeof(GBinderMQDescriptor));
+
+    const gsize vec_total =
+        desc->grantors.count * sizeof(GBinderFmqGrantorDescriptor);
+    void* vec_buf = gutil_memdup(desc->grantors.data.ptr, vec_total);
+
+    const gsize fds_total = sizeof(GBinderFds) +
+        sizeof(int) * (desc->data.fds->num_fds + desc->data.fds->num_ints);
+    GBinderFds* fds = gutil_memdup(desc->data.fds, fds_total);
+
+    mqdesc->data.fds = fds;
+    data->cleanup = gbinder_cleanup_add(data->cleanup, g_free, fds);
+
+    /* Fill in the grantor vector descriptor */
+    if (vec_buf) {
+        mqdesc->grantors.count = desc->grantors.count;
+        mqdesc->grantors.data.ptr = vec_buf;
+        mqdesc->grantors.owns_buffer = TRUE;
+        data->cleanup = gbinder_cleanup_add(data->cleanup, g_free, vec_buf);
+    }
+    data->cleanup = gbinder_cleanup_add(data->cleanup, g_free, mqdesc);
+
+    /* Write the FMQ descriptor object */
+    parent.index = gbinder_writer_data_append_buffer_object(data,
+        mqdesc, sizeof(*mqdesc), NULL);
+
+    /* Write the vector data buffer */
+    parent.offset = GBINDER_MQ_DESCRIPTOR_GRANTORS_OFFSET;
+    gbinder_writer_data_append_buffer_object(data, vec_buf, vec_total,
+        &parent);
+
+    /* Write the fds */
+    parent.offset = GBINDER_MQ_DESCRIPTOR_FDS_OFFSET;
+    gbinder_writer_data_append_fds(data, mqdesc->data.fds, &parent);
+}
+
+void
+gbinder_writer_append_fmq_descriptor(
+    GBinderWriter* self,
+    const GBinderFmq* queue) /* since 1.1.14 */
+{
+    GBinderWriterData* data = gbinder_writer_data(self);
+
+    if (G_LIKELY(data) && G_LIKELY(queue)) {
+        gbinder_writer_data_append_fmq_descriptor(data, queue);
+    }
+}
+
+#endif /* GBINDER_FMQ_SUPPORTED */
+
 void
 gbinder_writer_data_append_remote_object(
     GBinderWriterData* data,
@@ -992,6 +1174,14 @@ gbinder_writer_malloc0(
     gsize size) /* since 1.0.19 */
 {
     return gbinder_writer_alloc(self, size, g_malloc0, g_free);
+}
+
+char*
+gbinder_writer_strdup(
+    GBinderWriter* writer,
+    const char* str) /* since 1.1.13 */
+{
+    return str ? gbinder_writer_memdup(writer, str, strlen(str) + 1) : NULL;
 }
 
 void*

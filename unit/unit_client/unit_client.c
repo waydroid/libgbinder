@@ -1,6 +1,6 @@
 /*
- * Copyright (C) 2018-2021 Jolla Ltd.
- * Copyright (C) 2018-2021 Slava Monich <slava.monich@jolla.com>
+ * Copyright (C) 2018-2022 Jolla Ltd.
+ * Copyright (C) 2018-2022 Slava Monich <slava.monich@jolla.com>
  *
  * You may use this file under the terms of BSD license as follows:
  *
@@ -41,6 +41,7 @@
 #include "gbinder_output_data.h"
 #include "gbinder_remote_object_p.h"
 #include "gbinder_remote_reply.h"
+#include "gbinder_writer.h"
 
 #include <gutil_log.h>
 
@@ -54,7 +55,7 @@ test_client_new(
     guint h,
     const char* iface)
 {
-    GBinderIpc* ipc = gbinder_ipc_new(GBINDER_DEFAULT_BINDER);
+    GBinderIpc* ipc = gbinder_ipc_new(GBINDER_DEFAULT_BINDER, NULL);
     GBinderObjectRegistry* reg = gbinder_ipc_object_registry(ipc);
     GBinderRemoteObject* obj = gbinder_object_registry_get_remote(reg, h, TRUE);
     GBinderClient* client = gbinder_client_new(obj, iface);
@@ -79,6 +80,7 @@ test_null(
     g_assert(!gbinder_client_ref(NULL));
     g_assert(!gbinder_client_interface(NULL));
     g_assert(!gbinder_client_interface2(NULL, 0));
+    g_assert(!gbinder_client_rpc_header(NULL, 0));
     gbinder_client_unref(NULL);
     g_assert(!gbinder_client_new_request(NULL));
     g_assert(!gbinder_client_new_request2(NULL, 0));
@@ -97,7 +99,7 @@ void
 test_basic(
     void)
 {
-    GBinderIpc* ipc = gbinder_ipc_new(GBINDER_DEFAULT_BINDER);
+    GBinderIpc* ipc = gbinder_ipc_new(GBINDER_DEFAULT_BINDER, NULL);
     GBinderObjectRegistry* reg = gbinder_ipc_object_registry(ipc);
     GBinderRemoteObject* obj = gbinder_object_registry_get_remote(reg, 0, TRUE);
     const char* iface = "foo";
@@ -123,7 +125,7 @@ void
 test_interfaces(
     void)
 {
-    GBinderIpc* ipc = gbinder_ipc_new(GBINDER_DEFAULT_BINDER);
+    GBinderIpc* ipc = gbinder_ipc_new(GBINDER_DEFAULT_BINDER, NULL);
     GBinderObjectRegistry* reg = gbinder_ipc_object_registry(ipc);
     GBinderRemoteObject* obj = gbinder_object_registry_get_remote(reg, 0, TRUE);
     static const GBinderClientIfaceInfo ifaces[] = {
@@ -131,6 +133,11 @@ test_interfaces(
     };
     GBinderClient* client = gbinder_client_new2(obj, ifaces,
         G_N_ELEMENTS(ifaces));
+    GBinderWriter writer;
+    GBinderLocalRequest* req;
+    GBytes* rpc_header;
+    gsize len;
+    const void* hdr;
 
     g_assert(client);
     g_assert_cmpstr(gbinder_client_interface(client), == ,"11");
@@ -138,12 +145,25 @@ test_interfaces(
     g_assert_cmpstr(gbinder_client_interface2(client, 22), == ,"22");
     g_assert_cmpstr(gbinder_client_interface2(client, 33), == ,"33");
     g_assert(!gbinder_client_interface2(client, 34));
+    g_assert(!gbinder_client_rpc_header(client, 34));
     g_assert(!gbinder_client_new_request2(client, 34));
     /* Those fail to allocate default request for out-of-range codes: */
     g_assert(!gbinder_client_transact_sync_reply(client, 34, NULL, NULL));
     g_assert_cmpint(gbinder_client_transact_sync_oneway(client, 34, NULL),
         == ,-EINVAL);
     g_assert(!gbinder_client_transact(client, 34, 0, NULL, NULL, NULL, NULL));
+
+    /* Check the RPC header */
+    rpc_header = gbinder_client_rpc_header(client, 33);
+    req = gbinder_client_new_request2(client, 33);
+    g_assert(rpc_header);
+    g_assert(req);
+    gbinder_local_request_init_writer(req, &writer);
+    hdr = gbinder_writer_get_data(&writer, &len);
+    g_assert(hdr);
+    g_assert_cmpuint(len, == ,g_bytes_get_size(rpc_header));
+    g_assert(!memcmp(hdr, g_bytes_get_data(rpc_header, NULL), len));
+    gbinder_local_request_unref(req);
     gbinder_client_unref(client);
 
     /* Client with no interface info */
@@ -437,6 +457,9 @@ test_reply_ok3(
 
 int main(int argc, char* argv[])
 {
+    G_GNUC_BEGIN_IGNORE_DEPRECATIONS;
+    g_type_init();
+    G_GNUC_END_IGNORE_DEPRECATIONS;
     g_test_init(&argc, &argv, NULL);
     g_test_add_func(TEST_("null"), test_null);
     g_test_add_func(TEST_("basic"), test_basic);

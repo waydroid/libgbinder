@@ -1,6 +1,6 @@
 /*
- * Copyright (C) 2018-2019 Jolla Ltd.
- * Copyright (C) 2018-2019 Slava Monich <slava.monich@jolla.com>
+ * Copyright (C) 2018-2022 Jolla Ltd.
+ * Copyright (C) 2018-2022 Slava Monich <slava.monich@jolla.com>
  *
  * You may use this file under the terms of BSD license as follows:
  *
@@ -14,8 +14,8 @@
  *      notice, this list of conditions and the following disclaimer in the
  *      documentation and/or other materials provided with the distribution.
  *   3. Neither the names of the copyright holders nor the names of its
- *      contributors may be used to endorse or promote products derived from
- *      this software without specific prior written permission.
+ *      contributors may be used to endorse or promote products derived
+ *      from this software without specific prior written permission.
  *
  * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
  * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
@@ -90,7 +90,7 @@ gbinder_reader_at_end(
 {
     const GBinderReaderPriv* p = gbinder_reader_cast_c(reader);
 
-    return p->ptr >= p->end;
+    return !p || p->ptr >= p->end;
 }
 
 static
@@ -135,6 +135,62 @@ gbinder_reader_read_bool(
         return TRUE;
     } else {
         return FALSE;
+    }
+}
+
+gboolean
+gbinder_reader_read_int8(
+    GBinderReader* reader,
+    gint8* value) /* Since 1.1.15 */
+{
+    return gbinder_reader_read_uint8(reader, (guint8*)value);
+}
+
+gboolean
+gbinder_reader_read_uint8(
+    GBinderReader* reader,
+    guint8* value) /* Since 1.1.15 */
+{
+    /* Primitive values are supposed to be padded to 4-byte boundary */
+    if (value) {
+        guint32 padded;
+
+        if (gbinder_reader_read_uint32(reader, &padded)) {
+            *value = (guint8)padded;
+            return TRUE;
+        } else {
+            return FALSE;
+        }
+    } else {
+        return gbinder_reader_read_uint32(reader, NULL);
+    }
+}
+
+gboolean
+gbinder_reader_read_int16(
+    GBinderReader* reader,
+    gint16* value) /* Since 1.1.15 */
+{
+    return gbinder_reader_read_uint16(reader, (guint16*)value);
+}
+
+gboolean
+gbinder_reader_read_uint16(
+    GBinderReader* reader,
+    guint16* value) /* Since 1.1.15 */
+{
+    /* Primitive values are supposed to be padded to 4-byte boundary */
+    if (value) {
+        guint32 padded;
+
+        if (gbinder_reader_read_uint32(reader, &padded)) {
+            *value = (guint16)padded;
+            return TRUE;
+        } else {
+            return FALSE;
+        }
+    } else {
+        return gbinder_reader_read_uint32(reader, NULL);
     }
 }
 
@@ -362,6 +418,40 @@ gbinder_reader_skip_buffer(
     GBinderReader* reader)
 {
     return gbinder_reader_read_buffer_object(reader, NULL);
+}
+
+/*
+ * This is supposed to be used to read aidl parcelables, and is not
+ * guaranteed to work on any other kind of parcelable.
+ */
+const void*
+gbinder_reader_read_parcelable(
+    GBinderReader* reader,
+    gsize* size) /* Since 1.1.19 */
+{
+    guint32 non_null, payload_size = 0;
+
+    if (gbinder_reader_read_uint32(reader, &non_null) && non_null &&
+        gbinder_reader_read_uint32(reader, &payload_size) &&
+        payload_size >= sizeof(payload_size)) {
+        GBinderReaderPriv* p = gbinder_reader_cast(reader);
+
+        payload_size -= sizeof(payload_size);
+        if (p->ptr + payload_size <= p->end) {
+            const void* out = p->ptr;
+
+            /* Success */
+            p->ptr += payload_size;
+            if (size) {
+                *size = payload_size;
+            }
+            return out;
+        }
+    }
+    if (size) {
+        *size = 0;
+    }
+    return NULL;
 }
 
 /* Helper for gbinder_reader_read_hidl_struct() macro */
@@ -680,13 +770,38 @@ gbinder_reader_read_byte_array(
     return data;
 }
 
+const void*
+gbinder_reader_get_data(
+    const GBinderReader* reader,
+    gsize* size) /* Since 1.1.14 */
+{
+    const GBinderReaderPriv* p = gbinder_reader_cast_c(reader);
+
+    if (p) {
+        const GBinderReaderData* data = p->data;
+
+        if (data && data->buffer) {
+            if (size) {
+                *size = data->buffer->size;
+            }
+            return data->buffer->data;
+        }
+    }
+
+    /* No data */
+    if (size) {
+        *size = 0;
+    }
+    return NULL;
+}
+
 gsize
 gbinder_reader_bytes_read(
     const GBinderReader* reader)
 {
     const GBinderReaderPriv* p = gbinder_reader_cast_c(reader);
 
-    return p->ptr - p->start;
+    return p ? (p->ptr - p->start) : 0;
 }
 
 gsize
@@ -695,7 +810,7 @@ gbinder_reader_bytes_remaining(
 {
     const GBinderReaderPriv* p = gbinder_reader_cast_c(reader);
 
-    return p->end - p->ptr;
+    return p ? (p->end - p->ptr) : 0;
 }
 
 void
@@ -703,8 +818,11 @@ gbinder_reader_copy(
     GBinderReader* dest,
     const GBinderReader* src)
 {
-    /* It's actually quite simple :) */
-    memcpy(dest, src, sizeof(*dest));
+    if (src) {
+        memcpy(dest, src, sizeof(*dest));
+    } else {
+        memset(dest, 0, sizeof(*dest));
+    }
 }
 
 /*

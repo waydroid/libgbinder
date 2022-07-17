@@ -1,6 +1,6 @@
 /*
- * Copyright (C) 2018-2021 Jolla Ltd.
- * Copyright (C) 2018-2021 Slava Monich <slava.monich@jolla.com>
+ * Copyright (C) 2018-2022 Jolla Ltd.
+ * Copyright (C) 2018-2022 Slava Monich <slava.monich@jolla.com>
  *
  * You may use this file under the terms of BSD license as follows:
  *
@@ -100,7 +100,8 @@ extern const GBinderIpcSyncApi gbinder_ipc_sync_worker GBINDER_INTERNAL;
 
 GBinderIpc*
 gbinder_ipc_new(
-    const char* dev)
+    const char* dev,
+    const char* protocol)
     GBINDER_INTERNAL;
 
 GBinderIpc*
@@ -110,6 +111,11 @@ gbinder_ipc_ref(
 
 void
 gbinder_ipc_unref(
+    GBinderIpc* ipc)
+    GBINDER_INTERNAL;
+
+const char*
+gbinder_ipc_name(
     GBinderIpc* ipc)
     GBINDER_INTERNAL;
 
@@ -149,7 +155,7 @@ gbinder_ipc_register_local_object(
 
 GBinderRemoteObject*
 gbinder_ipc_get_service_manager(
-    GBinderIpc* self)
+    GBinderIpc* ipc)
     GBINDER_INTERNAL
     G_GNUC_WARN_UNUSED_RESULT;
 
@@ -196,21 +202,27 @@ gbinder_ipc_cancel(
 /* Internal for GBinderLocalObject */
 void
 gbinder_ipc_local_object_disposed(
-    GBinderIpc* self,
+    GBinderIpc* ipc,
+    GBinderLocalObject* obj)
+    GBINDER_INTERNAL;
+
+void
+gbinder_ipc_invalidate_local_object(
+    GBinderIpc* ipc,
     GBinderLocalObject* obj)
     GBINDER_INTERNAL;
 
 /* Internal for GBinderRemoteObject */
 void
 gbinder_ipc_remote_object_disposed(
-    GBinderIpc* self,
+    GBinderIpc* ipc,
     GBinderRemoteObject* obj)
     GBINDER_INTERNAL;
 
 /* Needed by unit tests */
 gboolean
 gbinder_ipc_set_max_threads(
-    GBinderIpc* self,
+    GBinderIpc* ipc,
     gint max_threads)
     GBINDER_INTERNAL;
 

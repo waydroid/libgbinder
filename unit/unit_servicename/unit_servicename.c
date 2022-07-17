@@ -1,6 +1,6 @@
 /*
- * Copyright (C) 2019-2021 Jolla Ltd.
- * Copyright (C) 2019-2021 Slava Monich <slava.monich@jolla.com>
+ * Copyright (C) 2019-2022 Jolla Ltd.
+ * Copyright (C) 2019-2022 Slava Monich <slava.monich@jolla.com>
  *
  * You may use this file under the terms of BSD license as follows:
  *
@@ -235,6 +235,18 @@ gbinder_servicemanager_aidl2_get_type()
 }
 
 GType
+gbinder_servicemanager_aidl3_get_type()
+{
+    return TEST_TYPE_SERVICEMANAGER;
+}
+
+GType
+gbinder_servicemanager_aidl4_get_type()
+{
+    return TEST_TYPE_SERVICEMANAGER;
+}
+
+GType
 gbinder_servicemanager_hidl_get_type()
 {
     return TEST_TYPE_SERVICEMANAGER;
@@ -250,7 +262,7 @@ test_null(
     void)
 {
     const char* dev = GBINDER_DEFAULT_BINDER;
-    GBinderIpc* ipc = gbinder_ipc_new(dev);
+    GBinderIpc* ipc = gbinder_ipc_new(dev, NULL);
     GBinderServiceManager* sm;
 
     test_setup_ping(ipc);
@@ -277,7 +289,7 @@ test_basic(
     const char* obj_name = "test";
     const char* dev = GBINDER_DEFAULT_BINDER;
     const char* const ifaces[] = { "interface", NULL };
-    GBinderIpc* ipc = gbinder_ipc_new(dev);
+    GBinderIpc* ipc = gbinder_ipc_new(dev, NULL);
     GMainLoop* loop = g_main_loop_new(NULL, FALSE);
     GBinderLocalObject* obj;
     GBinderServiceManager* sm;
@@ -315,7 +327,7 @@ test_present(
     const char* obj_name = "test";
     const char* const ifaces[] = { "interface", NULL };
     const char* dev = GBINDER_DEFAULT_BINDER;
-    GBinderIpc* ipc = gbinder_ipc_new(dev);
+    GBinderIpc* ipc = gbinder_ipc_new(dev, NULL);
     const int fd = gbinder_driver_fd(ipc->driver);
     GMainLoop* loop = g_main_loop_new(NULL, FALSE);
     GBinderLocalObject* obj;
@@ -376,7 +388,7 @@ test_not_present(
     const char* obj_name = "test";
     const char* const ifaces[] = { "interface", NULL };
     const char* dev = GBINDER_DEFAULT_BINDER;
-    GBinderIpc* ipc = gbinder_ipc_new(dev);
+    GBinderIpc* ipc = gbinder_ipc_new(dev, NULL);
     const int fd = gbinder_driver_fd(ipc->driver);
     GMainLoop* loop = g_main_loop_new(NULL, FALSE);
     GBinderLocalObject* obj;
@@ -421,7 +433,7 @@ test_retry(
     const char* obj_name = "test";
     const char* const ifaces[] = { "interface", NULL };
     const char* dev = GBINDER_DEFAULT_BINDER;
-    GBinderIpc* ipc = gbinder_ipc_new(dev);
+    GBinderIpc* ipc = gbinder_ipc_new(dev, NULL);
     const int fd = gbinder_driver_fd(ipc->driver);
     GMainLoop* loop = g_main_loop_new(NULL, FALSE);
     GBinderLocalObject* obj;
@@ -464,7 +476,7 @@ test_cancel(
     const char* obj_name = "test";
     const char* const ifaces[] = { "interface", NULL };
     const char* dev = GBINDER_DEFAULT_BINDER;
-    GBinderIpc* ipc = gbinder_ipc_new(dev);
+    GBinderIpc* ipc = gbinder_ipc_new(dev, NULL);
     const int fd = gbinder_driver_fd(ipc->driver);
     GMainLoop* loop = g_main_loop_new(NULL, FALSE);
     GBinderLocalObject* obj;
@@ -520,6 +532,9 @@ test_cancel(
 
 int main(int argc, char* argv[])
 {
+    G_GNUC_BEGIN_IGNORE_DEPRECATIONS;
+    g_type_init();
+    G_GNUC_END_IGNORE_DEPRECATIONS;
     g_test_init(&argc, &argv, NULL);
     g_test_add_func(TEST_("null"), test_null);
     g_test_add_func(TEST_("basic"), test_basic);
