@@ -1,6 +1,6 @@
 /*
+ * Copyright (C) 2018-2023 Slava Monich <slava@monich.com>
  * Copyright (C) 2018-2022 Jolla Ltd.
- * Copyright (C) 2018-2022 Slava Monich <slava.monich@jolla.com>
  *
  * You may use this file under the terms of BSD license as follows:
  *
@@ -32,7 +32,6 @@
 
 #include "test_binder.h"
 
-#include "gbinder_config.h"
 #include "gbinder_driver.h"
 #include "gbinder_handler.h"
 #include "gbinder_local_request_p.h"
@@ -42,6 +41,7 @@
 #include <poll.h>
 
 static TestOpt test_opt;
+static const char TMP_DIR_TEMPLATE[] = "gbinder-test-driver-XXXXXX";
 
 #define STRICT_MODE_PENALTY_GATHER (0x40 << 16)
 #define BINDER_RPC_FLAGS (STRICT_MODE_PENALTY_GATHER)
@@ -82,6 +82,7 @@ test_basic(
 
     g_assert(!gbinder_handler_transact(NULL, NULL, NULL, 0, 0, NULL));
     g_assert(!gbinder_handler_can_loop(NULL));
+    test_binder_exit_wait(&test_opt, NULL);
 }
 
 /*==========================================================================*
@@ -98,11 +99,12 @@ test_noop(
 
     g_assert(driver);
     g_assert(fd >= 0);
-    test_binder_br_noop(fd);
+    test_binder_br_noop(fd, THIS_THREAD);
     g_assert(gbinder_driver_poll(driver, NULL) == POLLIN);
     g_assert(gbinder_driver_read(driver, NULL, NULL) == 0);
 
     gbinder_driver_unref(driver);
+    test_binder_exit_wait(&test_opt, NULL);
 }
 
 /*==========================================================================*
@@ -131,6 +133,7 @@ test_local_request(
     g_assert(!memcmp(data->bytes->data, rpc_header, sizeof(rpc_header)));
     gbinder_local_request_unref(req);
     gbinder_driver_unref(driver);
+    test_binder_exit_wait(&test_opt, NULL);
 }
 
 /*==========================================================================*
@@ -141,30 +144,17 @@ test_local_request(
 
 int main(int argc, char* argv[])
 {
-    const char* default_config_dir;
-    const char* default_config_file;
-    char* config_dir = g_dir_make_tmp("gbinder-test-driver-XXXXXX", NULL);
-    char* config_file = g_build_filename(config_dir, "test.conf", NULL);
+    TestConfig test_config;
     int result;
-
-    /* Point gbinder_config_file to a non-existent file */
-    default_config_dir = gbinder_config_dir;
-    default_config_file = gbinder_config_file;
-    gbinder_config_dir = config_dir;
-    gbinder_config_file = config_file;
 
     g_test_init(&argc, &argv, NULL);
     g_test_add_func(TEST_PREFIX "basic", test_basic);
     g_test_add_func(TEST_PREFIX "noop", test_noop);
     g_test_add_func(TEST_PREFIX "local_request", test_local_request);
     test_init(&test_opt, argc, argv);
+    test_config_init(&test_config, TMP_DIR_TEMPLATE);
     result = g_test_run();
-
-    gbinder_config_dir = default_config_dir;
-    gbinder_config_file = default_config_file;
-    remove(config_dir);
-    g_free(config_dir);
-    g_free(config_file);
+    test_config_cleanup(&test_config);
     return result;
 }
 

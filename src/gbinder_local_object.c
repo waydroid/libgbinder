@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2018-2022 Jolla Ltd.
- * Copyright (C) 2018-2022 Slava Monich <slava.monich@jolla.com>
+ * Copyright (C) 2018-2024 Slava Monich <slava@monich.com>
  *
  * You may use this file under the terms of BSD license as follows:
  *
@@ -29,8 +29,6 @@
  * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF
  * THE POSSIBILITY OF SUCH DAMAGE.
  */
-
-#define GLIB_DISABLE_DEPRECATION_WARNINGS
 
 #include "gbinder_driver.h"
 #include "gbinder_ipc.h"
@@ -90,6 +88,15 @@ static const char hidl_base_interface[] = "android.hidl.base@1.0::IBase";
  *==========================================================================*/
 
 static
+GBinderLocalReply*
+gbinder_local_object_create_reply(
+    GBinderLocalObject* self)
+{
+    return gbinder_local_reply_new(gbinder_local_object_io(self),
+        gbinder_local_object_protocol(self));
+}
+
+static
 GBINDER_LOCAL_TRANSACTION_SUPPORT
 gbinder_local_object_default_can_handle_transaction(
     GBinderLocalObject* self,
@@ -139,8 +146,7 @@ gbinder_local_object_ping_transaction(
     GBinderRemoteRequest* req,
     int* status)
 {
-    const GBinderIo* io = gbinder_local_object_io(self);
-    GBinderLocalReply* reply = gbinder_local_reply_new(io);
+    GBinderLocalReply* reply = gbinder_local_object_create_reply(self);
 
     GVERBOSE("  PING_TRANSACTION");
     gbinder_local_reply_append_int32(reply, GBINDER_STATUS_OK);
@@ -155,9 +161,8 @@ gbinder_local_object_interface_transaction(
     GBinderRemoteRequest* req,
     int* status)
 {
-    const GBinderIo* io = gbinder_local_object_io(self);
     GBinderLocalObjectPriv* priv = self->priv;
-    GBinderLocalReply* reply = gbinder_local_reply_new(io);
+    GBinderLocalReply* reply = gbinder_local_object_create_reply(self);
 
     GVERBOSE("  INTERFACE_TRANSACTION");
     gbinder_local_reply_append_string16(reply, priv->ifaces[0]);
@@ -173,8 +178,7 @@ gbinder_local_object_hidl_ping_transaction(
     int* status)
 {
     /*android.hidl.base@1.0::IBase interfaceDescriptor() */
-    const GBinderIo* io = gbinder_local_object_io(self);
-    GBinderLocalReply* reply = gbinder_local_reply_new(io);
+    GBinderLocalReply* reply = gbinder_local_object_create_reply(self);
 
     GVERBOSE("  HIDL_PING_TRANSACTION \"%s\"",
         gbinder_remote_request_interface(req));
@@ -191,9 +195,8 @@ gbinder_local_object_hidl_get_descriptor_transaction(
     int* status)
 {
     /*android.hidl.base@1.0::IBase interfaceDescriptor() */
-    const GBinderIo* io = gbinder_local_object_io(self);
     GBinderLocalObjectPriv* priv = self->priv;
-    GBinderLocalReply* reply = gbinder_local_reply_new(io);
+    GBinderLocalReply* reply = gbinder_local_object_create_reply(self);
     GBinderWriter writer;
 
     GVERBOSE("  HIDL_GET_DESCRIPTOR_TRANSACTION \"%s\"",
@@ -213,8 +216,7 @@ gbinder_local_object_hidl_descriptor_chain_transaction(
     int* status)
 {
     /*android.hidl.base@1.0::IBase interfaceChain() */
-    const GBinderIo* io = gbinder_local_object_io(self);
-    GBinderLocalReply* reply = gbinder_local_reply_new(io);
+    GBinderLocalReply* reply = gbinder_local_object_create_reply(self);
     GBinderWriter writer;
 
     GVERBOSE("  HIDL_DESCRIPTOR_CHAIN_TRANSACTION \"%s\"",
@@ -440,6 +442,7 @@ gbinder_local_object_init_base(
 
     self->ipc = gbinder_ipc_ref(ipc);
     self->ifaces = (const char**)priv->ifaces;
+    self->stability = GBINDER_STABILITY_SYSTEM;
     priv->txproc = txproc;
     priv->user_data = user_data;
 }
@@ -480,7 +483,7 @@ gbinder_local_object_new_reply(
     GBinderLocalObject* self)
 {
     if (G_LIKELY(self)) {
-        return gbinder_local_reply_new(gbinder_local_object_io(self));
+        return gbinder_local_object_create_reply(self);
     }
     return NULL;
 }
@@ -607,6 +610,16 @@ gbinder_local_object_handle_release(
     GBinderLocalObject* self)
 {
     gbinder_local_object_handle_later(self, gbinder_local_object_release_proc);
+}
+
+void
+gbinder_local_object_set_stability(
+    GBinderLocalObject* self,
+    GBINDER_STABILITY_LEVEL stability) /* Since 1.1.40 */
+{
+    if (G_LIKELY(self)) {
+        self->stability = stability;
+    }
 }
 
 /*==========================================================================*

@@ -1,6 +1,6 @@
 /*
- * Copyright (C) 2018-2021 Jolla Ltd.
- * Copyright (C) 2018-2021 Slava Monich <slava.monich@jolla.com>
+ * Copyright (C) 2018-2022 Jolla Ltd.
+ * Copyright (C) 2018-2022 Slava Monich <slava.monich@jolla.com>
  *
  * You may use this file under the terms of BSD license as follows:
  *
@@ -59,6 +59,7 @@ struct gbinder_local_object {
     const char* const* ifaces;
     gint weak_refs;
     gint strong_refs;
+    GBINDER_STABILITY_LEVEL stability;
 };
 
 typedef enum gbinder_local_transaction_support {
@@ -92,6 +93,8 @@ GType gbinder_local_object_get_type(void) GBINDER_INTERNAL;
 
 #define gbinder_local_object_dev(obj) (gbinder_driver_dev((obj)->ipc->driver))
 #define gbinder_local_object_io(obj) (gbinder_driver_io((obj)->ipc->driver))
+#define gbinder_local_object_protocol(obj) \
+    (gbinder_driver_protocol((obj)->ipc->driver))
 
 GBinderLocalObject*
 gbinder_local_object_new_with_type(

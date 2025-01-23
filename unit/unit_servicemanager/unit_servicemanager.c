@@ -1,6 +1,6 @@
 /*
+ * Copyright (C) 2018-2024 Slava Monich <slava@monich.com>
  * Copyright (C) 2018-2022 Jolla Ltd.
- * Copyright (C) 2018-2022 Slava Monich <slava.monich@jolla.com>
  *
  * You may use this file under the terms of BSD license as follows:
  *
@@ -40,7 +40,6 @@
 #include "gbinder_local_object_p.h"
 #include "gbinder_servicemanager_p.h"
 #include "gbinder_object_registry.h"
-#include "gbinder_rpc_protocol.h"
 
 #include <gutil_strv.h>
 #include <gutil_macros.h>
@@ -133,9 +132,9 @@ test_setup_ping(
 {
     const int fd = gbinder_driver_fd(ipc->driver);
 
-    test_binder_br_noop(fd);
-    test_binder_br_transaction_complete(fd);
-    test_binder_br_reply(fd, 0, 0, NULL);
+    test_binder_br_noop(fd, THIS_THREAD);
+    test_binder_br_transaction_complete(fd, THIS_THREAD);
+    test_binder_br_reply(fd, THIS_THREAD, 0, 0, NULL);
 }
 
 /*==========================================================================*
@@ -450,10 +449,13 @@ test_invalid(
 {
     int status = 0;
     const char* dev = GBINDER_DEFAULT_HWBINDER;
-    GBinderIpc* ipc = gbinder_ipc_new(dev, NULL);
+    GBinderIpc* ipc;
     GBinderServiceManager* sm;
+    TestConfig config;
     gulong id = 0;
 
+    test_config_init(&config, TMP_DIR_TEMPLATE);
+    ipc = gbinder_ipc_new(dev, NULL);
     test_setup_ping(ipc);
     g_assert(!gbinder_servicemanager_new2(GBINDER_DEFAULT_HWBINDER, "a", NULL));
     sm = gbinder_servicemanager_new(dev);
@@ -484,6 +486,8 @@ test_invalid(
     gbinder_servicemanager_remove_handlers(sm, &id, 0);
     gbinder_servicemanager_unref(sm);
     gbinder_ipc_unref(ipc);
+    test_binder_exit_wait(&test_opt, NULL);
+    test_config_cleanup(&config);
 }
 
 /*==========================================================================*
@@ -496,10 +500,13 @@ test_basic(
     void)
 {
     const char* dev = GBINDER_DEFAULT_HWBINDER;
-    GBinderIpc* ipc = gbinder_ipc_new(dev, NULL);
+    GBinderIpc* ipc;
     GBinderServiceManager* sm;
     GBinderLocalObject* obj;
+    TestConfig config;
 
+    test_config_init(&config, TMP_DIR_TEMPLATE);
+    ipc = gbinder_ipc_new(dev, NULL);
     test_setup_ping(ipc);
     sm = gbinder_servicemanager_new(dev);
     g_assert(sm);
@@ -513,7 +520,8 @@ test_basic(
     gbinder_servicemanager_unref(sm);
     gbinder_servicemanager_unref(sm);
     gbinder_ipc_unref(ipc);
-    gbinder_ipc_exit();
+    test_binder_exit_wait(&test_opt, NULL);
+    test_config_cleanup(&config);
 }
 
 /*==========================================================================*
@@ -527,14 +535,12 @@ test_legacy(
 {
     const char* otherdev = "/dev/otherbinder";
     const char* dev = GBINDER_DEFAULT_HWBINDER;
-    GBinderIpc* ipc = gbinder_ipc_new(dev, NULL);
+    GBinderIpc* ipc;
     GBinderServiceManager* sm;
+    TestConfig config;
 
-    /* Reset the state */
-    gbinder_servicemanager_exit();
-    gbinder_config_exit();
-    gbinder_config_file = NULL;
-
+    test_config_init(&config, TMP_DIR_TEMPLATE);
+    ipc = gbinder_ipc_new(dev, NULL);
     test_setup_ping(ipc);
     sm = gbinder_hwservicemanager_new(dev);
     g_assert(TEST_IS_HWSERVICEMANAGER(sm));
@@ -556,7 +562,8 @@ test_legacy(
 
     gbinder_ipc_unref(ipc);
     gbinder_servicemanager_exit();
-    gbinder_ipc_exit();
+    test_binder_exit_wait(&test_opt, NULL);
+    test_config_cleanup(&config);
 }
 
 /*==========================================================================*
@@ -572,8 +579,8 @@ test_config(
     GBinderServiceManager* sm;
     const char* strange_name = "/dev/notbinder";
     const char* legacy_name = "/dev/legacybinder";
-    char* dir = g_dir_make_tmp(TMP_DIR_TEMPLATE, NULL);
-    char* file = g_build_filename(dir, "test.conf", NULL);
+    TestConfig test;
+    char* file;
 
     static const char config[] =
         "[ServiceManager]\n"
@@ -582,12 +589,12 @@ test_config(
         "/dev/hwbinder = foo\n" /* Invalid name */
         "/dev/legacybinder = aidl\n";
 
-    /* Reset the state */
-    gbinder_servicemanager_exit();
-    gbinder_config_exit();
+    test_config_init(&test, TMP_DIR_TEMPLATE);
+    file = g_build_filename(test.config_dir, "test.conf", NULL);
 
     /* Write the config file */
     g_assert(g_file_set_contents(file, config, -1, NULL));
+    GDEBUG("Config file %s", file);
     gbinder_config_file = file;
 
     /* Unknown device instantiates the default */
@@ -632,13 +639,10 @@ test_config(
 
     /* Clear the state */
     gbinder_servicemanager_exit();
-    gbinder_config_exit();
-    gbinder_config_file = NULL;
-
+    test_binder_exit_wait(&test_opt, NULL);
     remove(file);
-    remove(dir);
     g_free(file);
-    g_free(dir);
+    test_config_cleanup(&test);
 }
 
 /*==========================================================================*
@@ -651,12 +655,17 @@ test_not_present(
     void)
 {
     const char* dev = GBINDER_DEFAULT_HWBINDER;
-    GBinderIpc* ipc = gbinder_ipc_new(dev, NULL);
-    const int fd = gbinder_driver_fd(ipc->driver);
+    GBinderIpc* ipc;
     GBinderServiceManager* sm;
+    TestConfig config;
+    int fd;
+
+    test_config_init(&config, TMP_DIR_TEMPLATE);
+    ipc = gbinder_ipc_new(dev, NULL);
+    fd = gbinder_driver_fd(ipc->driver);
 
     /* This makes presence detection PING fail */
-    test_binder_br_reply_status(fd, -1);
+    test_binder_br_reply_status(fd, THIS_THREAD, -1);
 
     sm = gbinder_servicemanager_new(dev);
     g_assert(sm);
@@ -664,6 +673,8 @@ test_not_present(
 
     gbinder_servicemanager_unref(sm);
     gbinder_ipc_unref(ipc);
+    test_binder_exit_wait(&test_opt, NULL);
+    test_config_cleanup(&config);
 }
 
 /*==========================================================================*
@@ -676,16 +687,20 @@ test_wait(
     void)
 {
     const char* dev = GBINDER_DEFAULT_HWBINDER;
-    GBinderIpc* ipc = gbinder_ipc_new(dev, NULL);
-    const int fd = gbinder_driver_fd(ipc->driver);
     const glong forever = (test_opt.flags & TEST_FLAG_DEBUG) ?
         (TEST_TIMEOUT_SEC * 1000) : -1;
+    GBinderIpc* ipc;
     GBinderServiceManager* sm;
     gulong id;
-    int count = 0;
+    int fd, count = 0;
+    TestConfig config;
+
+    test_config_init(&config, TMP_DIR_TEMPLATE);
+    ipc = gbinder_ipc_new(dev, NULL);
+    fd = gbinder_driver_fd(ipc->driver);
 
     /* This makes presence detection PING fail */
-    test_binder_br_reply_status(fd, -1);
+    test_binder_br_reply_status(fd, THIS_THREAD, -1);
 
     sm = gbinder_servicemanager_new(dev);
     g_assert(sm);
@@ -696,13 +711,13 @@ test_wait(
     g_assert(id);
 
     /* Make this wait fail */
-    test_binder_br_reply_status(fd, -1);
+    test_binder_br_reply_status(fd, THIS_THREAD, -1);
     g_assert(!gbinder_servicemanager_wait(sm, 0));
 
     /* This makes presence detection PING succeed */
-    test_binder_br_noop(fd);
-    test_binder_br_transaction_complete(fd);
-    test_binder_br_reply(fd, 0, 0, NULL);
+    test_binder_br_noop(fd, THIS_THREAD);
+    test_binder_br_transaction_complete(fd, THIS_THREAD);
+    test_binder_br_reply(fd, THIS_THREAD, 0, 0, NULL);
     g_assert(gbinder_servicemanager_wait(sm, forever));
 
     /* The next check succeeds too (without any I/O ) */
@@ -714,7 +729,8 @@ test_wait(
     gbinder_servicemanager_remove_handler(sm, id);
     gbinder_servicemanager_unref(sm);
     gbinder_ipc_unref(ipc);
-    gbinder_ipc_exit();
+    test_binder_exit_wait(&test_opt, NULL);
+    test_config_cleanup(&config);
 }
 
 /*==========================================================================*
@@ -727,14 +743,18 @@ test_wait_long(
     void)
 {
     const char* dev = GBINDER_DEFAULT_HWBINDER;
-    GBinderIpc* ipc = gbinder_ipc_new(dev, NULL);
-    const int fd = gbinder_driver_fd(ipc->driver);
+    GBinderIpc* ipc;
     GBinderServiceManager* sm;
     gulong id;
-    int count = 0;
+    int fd, count = 0;
+    TestConfig config;
+
+    test_config_init(&config, TMP_DIR_TEMPLATE);
+    ipc = gbinder_ipc_new(dev, NULL);
+    fd = gbinder_driver_fd(ipc->driver);
 
     /* This makes presence detection PING fail */
-    test_binder_br_reply_status(fd, -1);
+    test_binder_br_reply_status(fd, THIS_THREAD, -1);
 
     sm = gbinder_servicemanager_new(dev);
     g_assert(sm);
@@ -745,10 +765,10 @@ test_wait_long(
     g_assert(id);
 
     /* Make the first presence detection PING fail and second succeed */
-    test_binder_br_reply_status(fd, -1);
-    test_binder_br_reply_status_later(fd, -1);
-    test_binder_br_transaction_complete_later(fd);
-    test_binder_br_reply_later(fd, 0, 0, NULL);
+    test_binder_br_reply_status(fd, THIS_THREAD, -1);
+    test_binder_br_reply_status(fd, TX_THREAD, -1);
+    test_binder_br_transaction_complete(fd, TX_THREAD);
+    test_binder_br_reply(fd, TX_THREAD, 0, 0, NULL);
     g_assert(gbinder_servicemanager_wait(sm, TEST_TIMEOUT_SEC * 1000));
 
     /* The next check succeeds too (without any I/O ) */
@@ -760,7 +780,8 @@ test_wait_long(
     gbinder_servicemanager_remove_handler(sm, id);
     gbinder_servicemanager_unref(sm);
     gbinder_ipc_unref(ipc);
-    gbinder_ipc_exit();
+    test_binder_exit_wait(&test_opt, NULL);
+    test_config_cleanup(&config);
 }
 
 /*==========================================================================*
@@ -773,15 +794,19 @@ test_wait_async(
     void)
 {
     const char* dev = GBINDER_DEFAULT_HWBINDER;
-    GBinderIpc* ipc = gbinder_ipc_new(dev, NULL);
-    const int fd = gbinder_driver_fd(ipc->driver);
     GMainLoop* loop = g_main_loop_new(NULL, FALSE);
+    GBinderIpc* ipc;
     GBinderServiceManager* sm;
     gulong id[2];
-    int count = 0;
+    int fd, count = 0;
+    TestConfig config;
+
+    test_config_init(&config, TMP_DIR_TEMPLATE);
+    ipc = gbinder_ipc_new(dev, NULL);
+    fd = gbinder_driver_fd(ipc->driver);
 
     /* This makes presence detection PING fail */
-    test_binder_br_reply_status(fd, -1);
+    test_binder_br_reply_status(fd, THIS_THREAD, -1);
 
     sm = gbinder_servicemanager_new(dev);
     g_assert(sm);
@@ -794,9 +819,9 @@ test_wait_async(
     g_assert(id[1]);
 
     /* Make the first presence detection PING fail and second succeed */
-    test_binder_br_reply_status(fd, -1);
-    test_binder_br_transaction_complete_later(fd);
-    test_binder_br_reply_later(fd, 0, 0, NULL);
+    test_binder_br_reply_status(fd, THIS_THREAD, -1);
+    test_binder_br_transaction_complete(fd, TX_THREAD);
+    test_binder_br_reply(fd, TX_THREAD, 0, 0, NULL);
     test_run(&test_opt, loop);
 
     /* The listener must have been invoked exactly once */
@@ -804,7 +829,8 @@ test_wait_async(
     gbinder_servicemanager_remove_all_handlers(sm, id);
     gbinder_servicemanager_unref(sm);
     gbinder_ipc_unref(ipc);
-    gbinder_ipc_exit();
+    test_binder_exit_wait(&test_opt, loop);
+    test_config_cleanup(&config);
     g_main_loop_unref(loop);
 }
 
@@ -817,12 +843,16 @@ void
 test_death_run()
 {
     const char* dev = GBINDER_DEFAULT_HWBINDER;
-    GBinderIpc* ipc = gbinder_ipc_new(dev, NULL);
-    const int fd = gbinder_driver_fd(ipc->driver);
     GMainLoop* loop = g_main_loop_new(NULL, FALSE);
+    GBinderIpc* ipc;
     GBinderServiceManager* sm;
     gulong id[3];
-    int count = 0, reg_count = 0;
+    int fd, count = 0, reg_count = 0;
+    TestConfig config;
+
+    test_config_init(&config, TMP_DIR_TEMPLATE);
+    ipc = gbinder_ipc_new(dev, NULL);
+    fd = gbinder_driver_fd(ipc->driver);
 
     test_setup_ping(ipc);
     sm = gbinder_servicemanager_new(dev);
@@ -838,9 +868,8 @@ test_death_run()
     g_assert(id[1]);
     g_assert(id[2]);
 
-    /* Generate death notification (need looper for that) */
-    test_binder_br_dead_binder(fd, 0);
-    test_binder_set_looper_enabled(fd, TEST_LOOPER_ENABLE);
+    /* Generate death notification */
+    test_binder_br_dead_binder(fd, ANY_THREAD, 0);
     test_run(&test_opt, loop);
 
     /* No registrations must have occured */
@@ -852,8 +881,8 @@ test_death_run()
     gbinder_servicemanager_remove_all_handlers(sm, id);
     gbinder_servicemanager_unref(sm);
     gbinder_ipc_unref(ipc);
-    gbinder_ipc_exit();
     test_binder_exit_wait(&test_opt, loop);
+    test_config_cleanup(&config);
     g_main_loop_unref(loop);
 }
 
@@ -880,11 +909,10 @@ test_reanimate_quit(
     } else {
         const int fd = gbinder_driver_fd(sm->client->remote->ipc->driver);
 
-        /* Disable looper and reanimate the object */
+        /* Reanimate the object */
         GDEBUG("Reanimating...");
-        test_binder_set_looper_enabled(fd, TEST_LOOPER_DISABLE);
-        test_binder_br_transaction_complete(fd);
-        test_binder_br_reply(fd, 0, 0, NULL);
+        test_binder_br_transaction_complete(fd, THIS_THREAD);
+        test_binder_br_reply(fd, THIS_THREAD, 0, 0, NULL);
     }
 }
 
@@ -894,14 +922,18 @@ test_reanimate(
     void)
 {
     const char* dev = GBINDER_DEFAULT_HWBINDER;
-    GBinderIpc* ipc = gbinder_ipc_new(dev, NULL);
-    const int fd = gbinder_driver_fd(ipc->driver);
     GMainLoop* loop = g_main_loop_new(NULL, FALSE);
+    GBinderIpc* ipc;
     GBinderServiceManager* sm;
     gulong id[3];
-    int count = 0, reg_count = 0;
+    int fd, count = 0, reg_count = 0;
+    TestConfig config;
 
     /* Create live service manager */
+    test_config_init(&config, TMP_DIR_TEMPLATE);
+    ipc = gbinder_ipc_new(dev, NULL);
+    fd = gbinder_driver_fd(ipc->driver);
+
     test_setup_ping(ipc);
     sm = gbinder_servicemanager_new(dev);
     g_assert(sm);
@@ -917,9 +949,8 @@ test_reanimate(
     g_assert(id[1]);
     g_assert(id[2]);
 
-    /* Generate death notification (need looper for that) */
-    test_binder_br_dead_binder(fd, 0);
-    test_binder_set_looper_enabled(fd, TEST_LOOPER_ENABLE);
+    /* Generate death notification */
+    test_binder_br_dead_binder(fd, ANY_THREAD, 0);
     test_run(&test_opt, loop);
 
     /* No registrations must have occured */
@@ -932,8 +963,8 @@ test_reanimate(
     gbinder_servicemanager_remove_all_handlers(sm, id);
     gbinder_servicemanager_unref(sm);
     gbinder_ipc_unref(ipc);
-    gbinder_ipc_exit();
     test_binder_exit_wait(&test_opt, loop);
+    test_config_cleanup(&config);
     g_main_loop_unref(loop);
 }
 
@@ -949,15 +980,21 @@ test_reuse(
     const char* binder_dev = GBINDER_DEFAULT_BINDER;
     const char* vndbinder_dev = "/dev/vpnbinder";
     const char* hwbinder_dev = GBINDER_DEFAULT_HWBINDER;
-    GBinderIpc* binder_ipc = gbinder_ipc_new(binder_dev, NULL);
-    GBinderIpc* vndbinder_ipc = gbinder_ipc_new(vndbinder_dev, NULL);
-    GBinderIpc* hwbinder_ipc = gbinder_ipc_new(hwbinder_dev, NULL);
+    GBinderIpc* binder_ipc;
+    GBinderIpc* vndbinder_ipc;
+    GBinderIpc* hwbinder_ipc;
     GBinderServiceManager* m1;
     GBinderServiceManager* m2;
     GBinderServiceManager* vnd1;
     GBinderServiceManager* vnd2;
     GBinderServiceManager* hw1;
     GBinderServiceManager* hw2;
+    TestConfig config;
+
+    test_config_init(&config, TMP_DIR_TEMPLATE);
+    binder_ipc = gbinder_ipc_new(binder_dev, NULL);
+    vndbinder_ipc = gbinder_ipc_new(vndbinder_dev, NULL);
+    hwbinder_ipc = gbinder_ipc_new(hwbinder_dev, NULL);
 
     test_setup_ping(binder_ipc);
     test_setup_ping(vndbinder_ipc);
@@ -991,7 +1028,8 @@ test_reuse(
     gbinder_ipc_unref(binder_ipc);
     gbinder_ipc_unref(vndbinder_ipc);
     gbinder_ipc_unref(hwbinder_ipc);
-    gbinder_ipc_exit();
+    test_binder_exit_wait(&test_opt, NULL);
+    test_config_cleanup(&config);
 }
 
 /*==========================================================================*
@@ -1004,13 +1042,16 @@ test_notify_type(
     GType t,
     const char* dev)
 {
-    GBinderIpc* ipc = gbinder_ipc_new(dev, NULL);
+    GBinderIpc* ipc;
     GBinderServiceManager* sm;
     TestHwServiceManager* test;
     const char* name = "foo";
     int count = 0;
     gulong id1, id2;
+    TestConfig config;
 
+    test_config_init(&config, TMP_DIR_TEMPLATE);
+    ipc = gbinder_ipc_new(dev, NULL);
     test_setup_ping(ipc);
     sm = gbinder_servicemanager_new_with_type(t, NULL, NULL);
     test = TEST_SERVICEMANAGER2(sm, t);
@@ -1036,7 +1077,8 @@ test_notify_type(
     gbinder_servicemanager_remove_handler(sm, id2);
     gbinder_servicemanager_unref(sm);
     gbinder_ipc_unref(ipc);
-    gbinder_ipc_exit();
+    test_binder_exit_wait(&test_opt, NULL);
+    test_config_cleanup(&config);
 }
 
 static
@@ -1072,13 +1114,16 @@ test_list(
     void)
 {
     const char* dev = GBINDER_DEFAULT_BINDER;
-    GBinderIpc* ipc = gbinder_ipc_new(dev, NULL);
     GMainLoop* loop = g_main_loop_new(NULL, FALSE);
+    GBinderIpc* ipc;
     GBinderServiceManager* sm;
     TestHwServiceManager* test;
     char** list;
     gulong id;
+    TestConfig config;
 
+    test_config_init(&config, TMP_DIR_TEMPLATE);
+    ipc = gbinder_ipc_new(dev, NULL);
     test_setup_ping(ipc);
     sm = gbinder_servicemanager_new(dev);
     test = TEST_SERVICEMANAGER(sm);
@@ -1094,7 +1139,8 @@ test_list(
 
     gbinder_servicemanager_unref(sm);
     gbinder_ipc_unref(ipc);
-    gbinder_ipc_exit();
+    test_binder_exit_wait(&test_opt, loop);
+    test_config_cleanup(&config);
     g_main_loop_unref(loop);
 }
 
@@ -1121,14 +1167,17 @@ test_get(
     void)
 {
     const char* dev = GBINDER_DEFAULT_BINDER;
-    GBinderIpc* ipc = gbinder_ipc_new(dev, NULL);
     GMainLoop* loop = g_main_loop_new(NULL, FALSE);
+    GBinderIpc* ipc;
     GBinderServiceManager* sm;
     TestHwServiceManager* test;
     int status = -1;
     GBinderLocalObject* obj;
     gulong id;
+    TestConfig config;
 
+    test_config_init(&config, TMP_DIR_TEMPLATE);
+    ipc = gbinder_ipc_new(dev, NULL);
     test_setup_ping(ipc);
     sm = gbinder_servicemanager_new(dev);
     test = TEST_SERVICEMANAGER(sm);
@@ -1158,7 +1207,8 @@ test_get(
 
     gbinder_servicemanager_unref(sm);
     gbinder_ipc_unref(ipc);
-    gbinder_ipc_exit();
+    test_binder_exit_wait(&test_opt, loop);
+    test_config_cleanup(&config);
     g_main_loop_unref(loop);
 }
 
@@ -1183,13 +1233,16 @@ test_add(
     void)
 {
     const char* dev = GBINDER_DEFAULT_BINDER;
-    GBinderIpc* ipc = gbinder_ipc_new(dev, NULL);
     GMainLoop* loop = g_main_loop_new(NULL, FALSE);
+    GBinderIpc* ipc;
     GBinderServiceManager* sm;
     TestHwServiceManager* test;
     GBinderLocalObject* obj;
     gulong id;
+    TestConfig config;
 
+    test_config_init(&config, TMP_DIR_TEMPLATE);
+    ipc = gbinder_ipc_new(dev, NULL);
     test_setup_ping(ipc);
     sm = gbinder_servicemanager_new(dev);
     test = TEST_SERVICEMANAGER(sm);
@@ -1206,7 +1259,8 @@ test_add(
     gbinder_local_object_unref(obj);
     gbinder_servicemanager_unref(sm);
     gbinder_ipc_unref(ipc);
-    gbinder_ipc_exit();
+    test_binder_exit_wait(&test_opt, loop);
+    test_config_cleanup(&config);
     g_main_loop_unref(loop);
 }
 

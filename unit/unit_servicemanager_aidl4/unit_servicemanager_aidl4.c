@@ -1,6 +1,6 @@
 /*
- * Copyright (C) 2020-2021 Jolla Ltd.
- * Copyright (C) 2020-2021 Slava Monich <slava.monich@jolla.com>
+ * Copyright (C) 2020-2022 Jolla Ltd.
+ * Copyright (C) 2023 Slava Monich <slava@monich.com>
  *
  * You may use this file under the terms of BSD license as follows:
  *
@@ -37,7 +37,6 @@
 #include "gbinder_ipc.h"
 #include "gbinder_reader.h"
 #include "gbinder_servicemanager_p.h"
-#include "gbinder_rpc_protocol.h"
 #include "gbinder_local_object_p.h"
 #include "gbinder_local_reply.h"
 #include "gbinder_remote_request.h"
@@ -51,17 +50,18 @@ static TestOpt test_opt;
 static const char TMP_DIR_TEMPLATE[] =
     "gbinder-test-servicemanager_aidl4-XXXXXX";
 
-enum gbinder_stability_level {
-    UNDECLARED = 0,
-    VENDOR = 0b000011,
-    SYSTEM = 0b001100,
-    VINTF = 0b111111
-};
-
 GType
 gbinder_servicemanager_hidl_get_type()
 {
     /* Dummy function to avoid pulling in gbinder_servicemanager_hidl */
+    g_assert_not_reached();
+    return 0;
+}
+
+GType
+gbinder_servicemanager_aidl2_get_type()
+{
+    /* Dummy function to avoid pulling in gbinder_servicemanager_aidl2 */
     g_assert_not_reached();
     return 0;
 }
@@ -85,7 +85,7 @@ typedef GBinderLocalObjectClass ServiceManagerAidl4Class;
 typedef struct service_manager_aidl4 {
     GBinderLocalObject parent;
     GHashTable* objects;
-    gboolean handle_on_looper_thread;
+    GMutex mutex;
 } ServiceManagerAidl4;
 
 #define SERVICE_MANAGER_AIDL4_TYPE (service_manager_aidl4_get_type())
@@ -94,59 +94,44 @@ typedef struct service_manager_aidl4 {
 G_DEFINE_TYPE(ServiceManagerAidl4, service_manager_aidl4, \
         GBINDER_TYPE_LOCAL_OBJECT)
 
-/* This is the format of stability passed on the wire. */
-typedef struct category {
-    /*
-     * This is the version of the wire protocol associated with the host
-     * process of a particular binder. As the wire protocol changes, if
-     * sending a transaction to a binder with an old version, the Parcel
-     * class must write parcels according to the version documented here.
-     */
-    gint8 version;
-    gint8 reserved[2];
-    gint8 level; /* bitmask of Stability::Level */
-} Category;
-
 static
 GBinderLocalReply*
 servicemanager_aidl4_handler(
-    GBinderLocalObject* obj,
+    ServiceManagerAidl4* self,
     GBinderRemoteRequest* req,
     guint code,
-    guint flags,
-    int* status,
-    void* user_data)
+    int* status)
 {
-    ServiceManagerAidl4* self = user_data;
+    GBinderLocalObject* obj = &self->parent;
     GBinderLocalReply* reply = NULL;
     GBinderReader reader;
     GBinderRemoteObject* remote_obj;
     guint32 allow_isolated, dumpsys_priority;
     char* str;
-    Category category;
 
-    g_assert(!flags);
     GDEBUG("%s %u", gbinder_remote_request_interface(req), code);
-    g_assert_cmpstr(gbinder_remote_request_interface(req), == ,SVCMGR_IFACE);
     *status = -1;
+
+    /* Lock */
+    g_mutex_lock(&self->mutex);
     switch (code) {
     case GET_SERVICE_TRANSACTION:
     case CHECK_SERVICE_TRANSACTION:
         gbinder_remote_request_init_reader(req, &reader);
         str = gbinder_reader_read_string16(&reader);
         if (str) {
-            reply = gbinder_local_object_new_reply(obj);
-            remote_obj = g_hash_table_lookup(self->objects, str);
-            if (remote_obj) {
-                GBinderWriter writer;
+            GBinderWriter writer;
 
+            remote_obj = g_hash_table_lookup(self->objects, str);
+            reply = gbinder_local_object_new_reply(obj);
+
+            gbinder_local_reply_init_writer(reply, &writer);
+            gbinder_writer_append_int32(&writer, GBINDER_STATUS_OK);
+            gbinder_writer_append_remote_object(&writer, remote_obj);
+            if (remote_obj) {
                 GDEBUG("Found name '%s' => %p", str, remote_obj);
-                gbinder_local_reply_init_writer(reply, &writer);
-                gbinder_writer_append_int32(&writer, UNDECLARED);
-                gbinder_writer_append_remote_object(&writer, remote_obj);
             } else {
                 GDEBUG("Name '%s' not found", str);
-                gbinder_local_reply_append_int32(reply, GBINDER_STATUS_OK);
             }
             g_free(str);
         }
@@ -155,10 +140,9 @@ servicemanager_aidl4_handler(
         gbinder_remote_request_init_reader(req, &reader);
         str = gbinder_reader_read_string16(&reader);
         remote_obj = gbinder_reader_read_object(&reader);
-        gbinder_reader_read_uint32(&reader, (guint32*)&category);
         if (str && remote_obj &&
-            category.level == SYSTEM &&
-            category.version == 1 &&
+            /* This field should be eventually handled at lower level. */
+            gbinder_reader_read_uint32(&reader, NULL) &&
             gbinder_reader_read_uint32(&reader, &allow_isolated) &&
             gbinder_reader_read_uint32(&reader, &dumpsys_priority)) {
             GDEBUG("Adding '%s'", str);
@@ -197,63 +181,39 @@ servicemanager_aidl4_handler(
         GDEBUG("Unhandled command %u", code);
         break;
     }
+    g_mutex_unlock(&self->mutex);
+    /* Unlock */
+
     return reply;
 }
 
 static
-ServiceManagerAidl4*
-servicemanager_aidl4_new(
-    const char* dev,
-    gboolean handle_on_looper_thread)
-{
-    ServiceManagerAidl4* self = g_object_new(SERVICE_MANAGER_AIDL4_TYPE, NULL);
-    GBinderLocalObject* obj = GBINDER_LOCAL_OBJECT(self);
-    GBinderIpc* ipc = gbinder_ipc_new(dev, NULL);
-    const int fd = gbinder_driver_fd(ipc->driver);
-
-    self->handle_on_looper_thread = handle_on_looper_thread;
-    gbinder_local_object_init_base(obj, ipc, servicemanager_aidl_ifaces,
-        servicemanager_aidl4_handler, self);
-    test_binder_set_looper_enabled(fd, TEST_LOOPER_ENABLE);
-    test_binder_register_object(fd, obj, SVCMGR_HANDLE);
-    gbinder_ipc_register_local_object(ipc, obj);
-    gbinder_ipc_unref(ipc);
-    return self;
-}
-
-static
-GBINDER_LOCAL_TRANSACTION_SUPPORT
-service_manager_aidl4_can_handle_transaction(
-    GBinderLocalObject* object,
-    const char* iface,
-    guint code)
-{
-    ServiceManagerAidl4* self = SERVICE_MANAGER_AIDL4(object);
-
-    if (self->handle_on_looper_thread && !g_strcmp0(SVCMGR_IFACE, iface)) {
-        return GBINDER_LOCAL_TRANSACTION_LOOPER;
-    } else {
-        return GBINDER_LOCAL_OBJECT_CLASS(service_manager_aidl4_parent_class)->
-            can_handle_transaction(object, iface, code);
-    }
-}
-
-static
 GBinderLocalReply*
-service_manager_aidl4_handle_looper_transaction(
-    GBinderLocalObject* object,
+servicemanager_aidl4_handle_looper_transaction(
+    GBinderLocalObject* obj,
     GBinderRemoteRequest* req,
     guint code,
     guint flags,
     int* status)
 {
-    if (!g_strcmp0(gbinder_remote_request_interface(req), SVCMGR_IFACE)) {
-        return GBINDER_LOCAL_OBJECT_CLASS(service_manager_aidl4_parent_class)->
-            handle_transaction(object, req, code, flags, status);
-    } else {
-        return GBINDER_LOCAL_OBJECT_CLASS(service_manager_aidl4_parent_class)->
-            handle_looper_transaction(object, req, code, flags, status);
-    }
+    return !g_strcmp0(gbinder_remote_request_interface(req), SVCMGR_IFACE) ?
+        servicemanager_aidl4_handler(SERVICE_MANAGER_AIDL4(obj),
+            req, code, status) :
+        GBINDER_LOCAL_OBJECT_CLASS(service_manager_aidl4_parent_class)->
+            handle_looper_transaction(obj, req, code, flags, status);
+}
+
+static
+GBINDER_LOCAL_TRANSACTION_SUPPORT
+servicemanager_aidl4_can_handle_transaction(
+    GBinderLocalObject* self,
+    const char* iface,
+    guint code)
+{
+    /* Handle servicemanager transactions on the looper thread */
+    return !g_strcmp0(iface, SVCMGR_IFACE) ? GBINDER_LOCAL_TRANSACTION_LOOPER :
+        GBINDER_LOCAL_OBJECT_CLASS(service_manager_aidl4_parent_class)->
+            can_handle_transaction(self, iface, code);
 }
 
 static
@@ -263,6 +223,7 @@ service_manager_aidl4_finalize(
 {
     ServiceManagerAidl4* self = SERVICE_MANAGER_AIDL4(object);
 
+    g_mutex_clear(&self->mutex);
     g_hash_table_destroy(self->objects);
     G_OBJECT_CLASS(service_manager_aidl4_parent_class)->finalize(object);
 }
@@ -272,6 +233,7 @@ void
 service_manager_aidl4_init(
     ServiceManagerAidl4* self)
 {
+    g_mutex_init(&self->mutex);
     self->objects = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
         (GDestroyNotify) gbinder_remote_object_unref);
 }
@@ -281,14 +243,29 @@ void
 service_manager_aidl4_class_init(
     ServiceManagerAidl4Class* klass)
 {
-    GObjectClass* object = G_OBJECT_CLASS(klass);
-    GBinderLocalObjectClass* local_object = GBINDER_LOCAL_OBJECT_CLASS(klass);
+    G_OBJECT_CLASS(klass)->finalize = service_manager_aidl4_finalize;
+    klass->can_handle_transaction =
+        servicemanager_aidl4_can_handle_transaction;
+    klass->handle_looper_transaction =
+        servicemanager_aidl4_handle_looper_transaction;
+}
 
-    object->finalize = service_manager_aidl4_finalize;
-    local_object->can_handle_transaction =
-        service_manager_aidl4_can_handle_transaction;
-    local_object->handle_looper_transaction =
-        service_manager_aidl4_handle_looper_transaction;
+static
+ServiceManagerAidl4*
+servicemanager_aidl4_new(
+    const char* dev)
+{
+    ServiceManagerAidl4* self = g_object_new(SERVICE_MANAGER_AIDL4_TYPE, NULL);
+    GBinderLocalObject* obj = GBINDER_LOCAL_OBJECT(self);
+    GBinderIpc* ipc = gbinder_ipc_new(dev, NULL);
+    const int fd = gbinder_driver_fd(ipc->driver);
+
+    gbinder_local_object_init_base(obj, ipc, servicemanager_aidl_ifaces,
+        NULL, NULL);
+    test_binder_register_object(fd, obj, SVCMGR_HANDLE);
+    gbinder_ipc_register_local_object(ipc, obj);
+    gbinder_ipc_unref(ipc);
+    return self;
 }
 
 /*==========================================================================*
@@ -296,14 +273,12 @@ service_manager_aidl4_class_init(
  *==========================================================================*/
 
 typedef struct test_context {
-    const char* default_config_dir;
-    const char* default_config_file;
-    char* config_dir;
-    char* config_subdir;
+    TestConfig config;
     char* config_file;
     GBinderLocalObject* object;
     ServiceManagerAidl4* service;
     GBinderServiceManager* client;
+    GMainLoop* loop;
     int fd;
 } TestContext;
 
@@ -313,11 +288,6 @@ test_context_init(
     TestContext* test)
 {
     const char* dev = GBINDER_DEFAULT_BINDER;
-    const char* other_dev = GBINDER_DEFAULT_BINDER "-private";
-    /*
-     * Also set defaults so that both /dev/binder and /dev/binder-private
-     * use the same protocol.
-     */
     const char* config =
         "[Protocol]\n"
         "Default = aidl3\n"
@@ -328,26 +298,20 @@ test_context_init(
     GBinderIpc* ipc;
 
     memset(test, 0, sizeof(*test));
-    test->default_config_dir = gbinder_config_dir;
-    test->default_config_file = gbinder_config_file;
-    test->config_dir = g_dir_make_tmp(TMP_DIR_TEMPLATE, NULL);
-    test->config_subdir = g_build_filename(test->config_dir, "d", NULL);
-    test->config_file = g_build_filename(test->config_dir, "test.conf", NULL);
+    test_config_init(&test->config, TMP_DIR_TEMPLATE);
+    test->config_file = g_build_filename(test->config.config_dir,
+        "test.conf", NULL);
     g_assert(g_file_set_contents(test->config_file, config, -1, NULL));
     GDEBUG("Config file %s", test->config_file);
-    gbinder_config_dir = test->config_subdir; /* Doesn't exist */
     gbinder_config_file = test->config_file;
 
     ipc = gbinder_ipc_new(dev, NULL);
     test->fd = gbinder_driver_fd(ipc->driver);
     test->object = gbinder_local_object_new(ipc, NULL, NULL, NULL);
-
-    /* Set up binder simulator */
     test_binder_register_object(test->fd, test->object, AUTO_HANDLE);
-    test_binder_set_passthrough(test->fd, TRUE);
-
-    test->service = servicemanager_aidl4_new(other_dev, TRUE);
+    test->service = servicemanager_aidl4_new(dev);
     test->client = gbinder_servicemanager_new(dev);
+    test->loop = g_main_loop_new(NULL, FALSE);
     gbinder_ipc_unref(ipc);
 }
 
@@ -358,18 +322,38 @@ test_context_deinit(
 {
     test_binder_unregister_objects(test->fd);
     gbinder_local_object_unref(test->object);
-    gbinder_local_object_drop(GBINDER_LOCAL_OBJECT(test->service));
+    gbinder_local_object_unref(GBINDER_LOCAL_OBJECT(test->service));
     gbinder_servicemanager_unref(test->client);
-    gbinder_ipc_exit();
-    test_binder_exit_wait(&test_opt, NULL);
+    test_binder_exit_wait(&test_opt, test->loop);
     remove(test->config_file);
-    remove(test->config_dir);
     g_free(test->config_file);
-    g_free(test->config_subdir);
-    g_free(test->config_dir);
-    gbinder_config_dir = test->default_config_dir;
-    gbinder_config_file = test->default_config_file;
-    gbinder_config_exit();
+    g_main_loop_unref(test->loop);
+    test_config_cleanup(&test->config);
+}
+
+static
+void
+test_context_wait_ref_cb(
+    GBinderLocalObject* obj,
+    void* user_data)
+{
+    GDEBUG("strong_refs %d", obj->strong_refs);
+    if (obj->strong_refs > 0) {
+        test_quit_later((GMainLoop*)user_data);
+    }
+}
+
+static
+void
+test_context_wait_ref(
+    TestContext* test)
+{
+    /* Wait until the object gets referenced by servicemanager */
+    gulong id = gbinder_local_object_add_strong_refs_changed_handler
+        (test->object, test_context_wait_ref_cb, test->loop);
+
+    test_run(&test_opt, test->loop);
+    gbinder_local_object_remove_handler(test->object, id);
 }
 
 /*==========================================================================*
@@ -399,6 +383,9 @@ test_get_run()
 
     g_assert_cmpuint(g_hash_table_size(test.service->objects), == ,1);
     g_assert(g_hash_table_contains(test.service->objects, name));
+
+    /* Wait until the object gets referenced by servicemanager */
+    test_context_wait_ref(&test);
 
     /* Query the object (this time it must be there) */
     GDEBUG("Querying '%s' again", name);
@@ -442,6 +429,9 @@ test_list_run()
     GDEBUG("Registering object '%s' => %p", name, test.object);
     g_assert_cmpint(gbinder_servicemanager_add_service_sync(test.client,
         name, test.object), == ,GBINDER_STATUS_OK);
+
+    /* Wait until the object gets referenced by servicemanager */
+    test_context_wait_ref(&test);
 
     /* Request the list again */
     list = gbinder_servicemanager_list_sync(test.client);

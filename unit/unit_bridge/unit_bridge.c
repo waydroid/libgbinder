@@ -1,6 +1,6 @@
 /*
+ * Copyright (C) 2021-2023 Slava Monich <slava@monich.com>
  * Copyright (C) 2021-2022 Jolla Ltd.
- * Copyright (C) 2021-2022 Slava Monich <slava.monich@jolla.com>
  *
  * You may use this file under the terms of BSD license as follows:
  *
@@ -52,9 +52,7 @@
 static TestOpt test_opt;
 
 #define SRC_DEV "/dev/srcbinder"
-#define SRC_PRIV_DEV  SRC_DEV "-private"
 #define DEST_DEV "/dev/dstbinder"
-#define DEST_PRIV_DEV  DEST_DEV "-private"
 #define TEST_IFACE "gbinder@1.0::ITest"
 
 #define TX_CODE   GBINDER_FIRST_CALL_TRANSACTION
@@ -69,114 +67,9 @@ static const char DEFAULT_CONFIG_DATA[] =
     "[ServiceManager]\n"
     "Default = hidl\n";
 
-typedef struct test_config {
-    char* dir;
-    char* file;
-} TestConfig;
-
-/*==========================================================================*
- * Test object (registered with two GBinderIpc's)
- *==========================================================================*/
-
-typedef GBinderLocalObjectClass TestLocalObjectClass;
-typedef struct test_local_object {
-    GBinderLocalObject parent;
-    GBinderIpc* ipc2;
-} TestLocalObject;
-G_DEFINE_TYPE(TestLocalObject, test_local_object, GBINDER_TYPE_LOCAL_OBJECT)
-#define TEST_TYPE_LOCAL_OBJECT test_local_object_get_type()
-#define TEST_LOCAL_OBJECT(obj) (G_TYPE_CHECK_INSTANCE_CAST((obj), \
-        TEST_TYPE_LOCAL_OBJECT, TestLocalObject))
-
-TestLocalObject*
-test_local_object_new(
-    GBinderIpc* ipc,
-    GBinderIpc* ipc2,
-    const char* const* ifaces,
-    GBinderLocalTransactFunc txproc,
-    void* user_data)
-{
-    TestLocalObject* self = TEST_LOCAL_OBJECT
-        (gbinder_local_object_new_with_type(TEST_TYPE_LOCAL_OBJECT,
-            ipc, ifaces, txproc, user_data));
-
-    self->ipc2 = gbinder_ipc_ref(ipc2);
-    gbinder_ipc_register_local_object(ipc2, &self->parent);
-    return self;
-}
-
-static
-void
-test_local_object_dispose(
-    GObject* object)
-{
-    TestLocalObject* self = TEST_LOCAL_OBJECT(object);
-
-    gbinder_ipc_local_object_disposed(self->ipc2, &self->parent);
-    G_OBJECT_CLASS(test_local_object_parent_class)->dispose(object);
-}
-
-static
-void
-test_local_object_finalize(
-    GObject* object)
-{
-    gbinder_ipc_unref(TEST_LOCAL_OBJECT(object)->ipc2);
-    G_OBJECT_CLASS(test_local_object_parent_class)->finalize(object);
-}
-
-static
-void
-test_local_object_init(
-    TestLocalObject* self)
-{
-}
-
-static
-void
-test_local_object_class_init(
-    TestLocalObjectClass* klass)
-{
-    GObjectClass* object_class = G_OBJECT_CLASS(klass);
-
-    object_class->dispose = test_local_object_dispose;
-    object_class->finalize = test_local_object_finalize;
-}
-
 /*==========================================================================*
  * Common
  *==========================================================================*/
-
-static
-void
-test_config_init(
-    TestConfig* config,
-    char* config_data)
-{
-    config->dir = g_dir_make_tmp(TMP_DIR_TEMPLATE, NULL);
-    config->file = g_build_filename(config->dir, "test.conf", NULL);
-    g_assert(g_file_set_contents(config->file, config_data ? config_data :
-        DEFAULT_CONFIG_DATA, -1, NULL));
-
-    gbinder_config_exit();
-    gbinder_config_dir = config->dir;
-    gbinder_config_file = config->file;
-    GDEBUG("Wrote config to %s", config->file);
-}
-
-static
-void
-test_config_deinit(
-    TestConfig* config)
-{
-    gbinder_config_exit();
-
-    remove(config->file);
-    g_free(config->file);
-
-    remove(config->dir);
-    g_free(config->dir);
-}
 
 static
 TestServiceManagerHidl*
@@ -187,7 +80,6 @@ test_servicemanager_impl_new(
     const int fd = gbinder_driver_fd(ipc->driver);
     TestServiceManagerHidl* sm = test_servicemanager_hidl_new(ipc);
 
-    test_binder_set_looper_enabled(fd, TRUE);
     test_binder_register_object(fd, GBINDER_LOCAL_OBJECT(sm),
         GBINDER_SERVICEMANAGER_HANDLE);
     gbinder_ipc_unref(ipc);
@@ -333,46 +225,34 @@ test_basic_run(
     void)
 {
     TestBasic test;
-    TestConfig config;
     TestServiceManagerHidl* dest_impl;
     GBinderServiceManager* src;
     GBinderServiceManager* dest;
     GBinderIpc* src_ipc;
-    GBinderIpc* src_priv_ipc;
     GBinderIpc* dest_ipc;
-    GBinderIpc* dest_priv_ipc;
     GBinderBridge* bridge;
-    TestLocalObject* obj;
-    GBinderRemoteObject* br_src_obj;
+    GBinderLocalObject* obj;
     GBinderRemoteObject* src_obj;
     GBinderLocalRequest* req;
     GBinderClient* src_client;
     const char* name = "test";
     const char* fqname = TEST_IFACE "/test";
-    int src_fd, dest_fd, h, n = 0;
+    int src_fd, dest_fd, n = 0;
     gulong id;
 
-    test_config_init(&config, NULL);
     memset(&test, 0, sizeof(test));
     test.loop = g_main_loop_new(NULL, FALSE);
 
     /* obj (DEST) <=> bridge <=> (SRC) mirror */
     src_ipc = gbinder_ipc_new(SRC_DEV, NULL);
-    src_priv_ipc = gbinder_ipc_new(SRC_PRIV_DEV, NULL);
     dest_ipc = gbinder_ipc_new(DEST_DEV, NULL);
-    dest_priv_ipc = gbinder_ipc_new(DEST_PRIV_DEV, NULL);
-    test.src_impl = test_servicemanager_impl_new(SRC_PRIV_DEV);
-    dest_impl = test_servicemanager_impl_new(DEST_PRIV_DEV);
+    test.src_impl = test_servicemanager_impl_new(SRC_DEV);
+    dest_impl = test_servicemanager_impl_new(DEST_DEV);
     src_fd = gbinder_driver_fd(src_ipc->driver);
     dest_fd = gbinder_driver_fd(dest_ipc->driver);
-    obj = test_local_object_new(dest_ipc, dest_priv_ipc, TEST_IFACES,
-        test_basic_cb, &n);
+    obj = gbinder_local_object_new(dest_ipc, TEST_IFACES, test_basic_cb, &n);
 
     /* Set up binder simulator */
-    test_binder_set_passthrough(src_fd, TRUE);
-    test_binder_set_passthrough(dest_fd, TRUE);
-    test_binder_set_looper_enabled(src_fd, TEST_LOOPER_ENABLE);
-    test_binder_set_looper_enabled(dest_fd, TEST_LOOPER_ENABLE);
     src = gbinder_servicemanager_new(SRC_DEV);
     dest = gbinder_servicemanager_new(DEST_DEV);
 
@@ -387,7 +267,7 @@ test_basic_run(
 
     /* Register the object and wait for completion */
     GDEBUG("Registering object '%s' => %p", name, obj);
-    g_assert(gbinder_servicemanager_add_service(dest, name, &obj->parent,
+    g_assert(gbinder_servicemanager_add_service(dest, name, obj,
         test_basic_add_cb, &test));
 
     /* This loop quits after the name is added and notification is received */
@@ -398,25 +278,12 @@ test_basic_run(
     gbinder_servicemanager_remove_handler(src, id);
 
     /* Get a remote reference to the object created by the bridge */
-    br_src_obj = gbinder_servicemanager_get_service_sync(src, fqname, NULL);
-    g_assert(gbinder_remote_object_ref(br_src_obj)); /* autoreleased */
-    g_assert(!br_src_obj->dead);
-
-    /*
-     * This is a trick specific to test_binder simulation. We need to
-     * associate src_obj with the other side of the socket, so that the
-     * call goes like this:
-     *
-     * src_obj (src_priv) => (src) bridge (dest) => (dest_priv) => obj
-     *
-     * Note that the original src_obj gets autoreleased and doesn't need
-     * to be explicitly unreferenced.
-     */
-    src_obj = gbinder_remote_object_new(src_priv_ipc,
-        br_src_obj->handle, REMOTE_OBJECT_CREATE_ALIVE);
+    src_obj = gbinder_servicemanager_get_service_sync(src, fqname, NULL);
+    g_assert(!src_obj->dead);
 
     /* Make a call */
     GDEBUG("Submitting a call");
+    /* src_client will hold a reference to src_obj */
     src_client = gbinder_client_new(src_obj, TEST_IFACE);
     req = gbinder_client_new_request(src_client);
     gbinder_local_request_append_int32(req, TX_PARAM);
@@ -427,42 +294,39 @@ test_basic_run(
     /* Wait for completion */
     test_run(&test_opt, test.loop);
 
-    /* Kill the destination object and wait for auto-created object to die */
-    g_assert(!br_src_obj->dead);
-    id = gbinder_remote_object_add_death_handler(br_src_obj, test_basic_death,
+    /* Kill the objects and wait for one of them to die */
+    g_assert(!src_obj->dead);
+    id = gbinder_remote_object_add_death_handler(src_obj, test_basic_death,
         test.loop);
-    h = test_binder_handle(dest_fd, &obj->parent);
-    g_assert_cmpint(h, > ,0); /* Zero is servicemanager */
 
-    GDEBUG("Killing destination object, handle %d", h);
-    gbinder_local_object_drop(&obj->parent);
-    test_binder_br_dead_binder(dest_fd, h);
+    g_assert(test_servicemanager_hidl_remove(dest_impl, fqname));
+    GDEBUG("Killing destination objects");
+    /*
+     * Need these BR_DEAD_BINDER because both servicemanagers and the
+     * bridge live inside the same process and reference the same objects.
+     * BR_DEAD_BINDER forces the bridge (proxy) to drop its reference.
+     */
+    test_binder_br_dead_binder_obj(dest_fd, obj);
+    test_binder_br_dead_binder(src_fd, ANY_THREAD, src_obj->handle);
 
     /* Wait for the auto-created object to die */
     test_run(&test_opt, test.loop);
-    g_assert(br_src_obj->dead);
-    gbinder_remote_object_remove_handler(br_src_obj, id);
+    g_assert(src_obj->dead);
+    gbinder_remote_object_remove_handler(src_obj, id);
 
     GDEBUG("Done");
 
+    gbinder_local_object_drop(obj);
     gbinder_bridge_free(bridge);
-    gbinder_remote_object_unref(src_obj);
-    gbinder_remote_object_unref(br_src_obj);
     test_servicemanager_hidl_free(test.src_impl);
     test_servicemanager_hidl_free(dest_impl);
     gbinder_servicemanager_unref(src);
     gbinder_servicemanager_unref(dest);
     gbinder_client_unref(src_client);
-    test_binder_unregister_objects(src_fd);
-    test_binder_unregister_objects(dest_fd);
     gbinder_ipc_unref(src_ipc);
-    gbinder_ipc_unref(src_priv_ipc);
     gbinder_ipc_unref(dest_ipc);
-    gbinder_ipc_unref(dest_priv_ipc);
 
-    gbinder_ipc_exit();
     test_binder_exit_wait(&test_opt, test.loop);
-    test_config_deinit(&config);
     g_main_loop_unref(test.loop);
 }
 
@@ -482,14 +346,31 @@ test_basic(
 
 int main(int argc, char* argv[])
 {
+    TestConfig test_config;
+    char* config_file;
+    int result;
+
     G_GNUC_BEGIN_IGNORE_DEPRECATIONS;
     g_type_init();
     G_GNUC_END_IGNORE_DEPRECATIONS;
     g_test_init(&argc, &argv, NULL);
     g_test_add_func(TEST_("null"), test_null);
     g_test_add_func(TEST_("basic"), test_basic);
+
     test_init(&test_opt, argc, argv);
-    return g_test_run();
+    test_config_init(&test_config, TMP_DIR_TEMPLATE);
+
+    config_file = g_build_filename(test_config.config_dir, "test.conf", NULL);
+    g_assert(g_file_set_contents(config_file, DEFAULT_CONFIG_DATA, -1, NULL));
+    GDEBUG("Config file %s", config_file);
+    gbinder_config_file = config_file;
+
+    result = g_test_run();
+
+    remove(config_file);
+    g_free(config_file);
+    test_config_cleanup(&test_config);
+    return result;
 }
 
 /*

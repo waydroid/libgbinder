@@ -1,6 +1,6 @@
 /*
- * Copyright (C) 2018-2021 Jolla Ltd.
- * Copyright (C) 2018-2021 Slava Monich <slava.monich@jolla.com>
+ * Copyright (C) 2018-2024 Slava Monich <slava@monich.com>
+ * Copyright (C) 2018-2022 Jolla Ltd.
  *
  * You may use this file under the terms of BSD license as follows:
  *
@@ -33,21 +33,20 @@
 #include "test_common.h"
 #include "test_binder.h"
 
+#include "gbinder_local_object.h"
 #include "gbinder_local_request_p.h"
 #include "gbinder_output_data.h"
+#include "gbinder_rpc_protocol.h"
 #include "gbinder_buffer_p.h"
 #include "gbinder_driver.h"
 #include "gbinder_writer.h"
 #include "gbinder_io.h"
+#include "gbinder_ipc.h"
 
 #include <gutil_intarray.h>
 
 static TestOpt test_opt;
-
-#define BUFFER_OBJECT_SIZE_32 (24)
-#define BUFFER_OBJECT_SIZE_64 (GBINDER_MAX_BUFFER_OBJECT_SIZE)
-#define BINDER_OBJECT_SIZE_32 (16)
-#define BINDER_OBJECT_SIZE_64 (GBINDER_MAX_BINDER_OBJECT_SIZE)
+static const char TMP_DIR_TEMPLATE[] = "gbinder-test-local-request-XXXXXX";
 
 static
 void
@@ -80,6 +79,14 @@ test_buffer_from_bytes_and_objects(
     return gbinder_buffer_new(driver, bytes->data, bytes->len, objects);
 }
 
+static
+GBinderLocalRequest*
+test_local_request_new()
+{
+    return gbinder_local_request_new(&gbinder_io_32,
+        gbinder_rpc_protocol_for_device(NULL), NULL);
+}
+
 /*==========================================================================*
  * null
  *==========================================================================*/
@@ -92,7 +99,10 @@ test_null(
     GBinderWriter writer;
     int count = 0;
 
-    g_assert(!gbinder_local_request_new(NULL, NULL));
+    g_assert(!gbinder_local_request_new(NULL, NULL, NULL));
+    g_assert(!gbinder_local_request_new(&gbinder_io_32, NULL, NULL));
+    g_assert(!gbinder_local_request_new(NULL,
+        gbinder_rpc_protocol_for_device(NULL), NULL));
     g_assert(!gbinder_local_request_ref(NULL));
     g_assert(!gbinder_local_request_new_from_data(NULL, NULL));
     gbinder_local_request_unref(NULL);
@@ -125,7 +135,7 @@ void
 test_cleanup(
     void)
 {
-    GBinderLocalRequest* req = gbinder_local_request_new(&gbinder_io_32, NULL);
+    GBinderLocalRequest* req = test_local_request_new();
     int count = 0;
 
     gbinder_local_request_cleanup(req, NULL, &count);
@@ -149,7 +159,7 @@ test_init_data(
     const guint8 init_data[] = { 0x01, 0x02, 0x03, 0x04 };
     GBytes* init_bytes = g_bytes_new_static(init_data, sizeof(init_data));
     GBinderLocalRequest* req = gbinder_local_request_new
-        (&gbinder_io_32, init_bytes);
+        (&gbinder_io_32, gbinder_rpc_protocol_for_device(NULL), init_bytes);
     GBinderOutputData* data;
 
     data = gbinder_local_request_data(req);
@@ -161,7 +171,7 @@ test_init_data(
     gbinder_local_request_unref(req);
     gbinder_local_request_unref(req);
 
-    req = gbinder_local_request_new(&gbinder_io_32, NULL);
+    req = test_local_request_new();
     data = gbinder_local_request_data(req);
     g_assert(data->bytes);
     g_assert(!data->bytes->len);
@@ -181,7 +191,7 @@ test_bool(
 {
     static const guint8 output_true[] = { 0x01, 0x00, 0x00, 0x00 };
     static const guint8 output_false[] = { 0x00, 0x00, 0x00, 0x00 };
-    GBinderLocalRequest* req = gbinder_local_request_new(&gbinder_io_32, NULL);
+    GBinderLocalRequest* req = test_local_request_new();
     GBinderOutputData* data;
 
     gbinder_local_request_append_bool(req, FALSE);
@@ -192,7 +202,7 @@ test_bool(
     g_assert(!memcmp(data->bytes->data, output_false, data->bytes->len));
     gbinder_local_request_unref(req);
 
-    req = gbinder_local_request_new(&gbinder_io_32, NULL);
+    req = test_local_request_new();
     gbinder_local_request_append_bool(req, TRUE);
     data = gbinder_local_request_data(req);
     g_assert(!gbinder_output_data_offsets(data));
@@ -201,7 +211,7 @@ test_bool(
     g_assert(!memcmp(data->bytes->data, output_true, data->bytes->len));
     gbinder_local_request_unref(req);
 
-    req = gbinder_local_request_new(&gbinder_io_32, NULL);
+    req = test_local_request_new();
     gbinder_local_request_append_bool(req, 42);
     data = gbinder_local_request_data(req);
     g_assert(!gbinder_output_data_offsets(data));
@@ -221,7 +231,7 @@ test_int32(
     void)
 {
     const guint32 value = 1234567;
-    GBinderLocalRequest* req = gbinder_local_request_new(&gbinder_io_32, NULL);
+    GBinderLocalRequest* req = test_local_request_new();
     GBinderOutputData* data;
 
     gbinder_local_request_append_int32(req, value);
@@ -243,7 +253,7 @@ test_int64(
     void)
 {
     const guint64 value = 123456789;
-    GBinderLocalRequest* req = gbinder_local_request_new(&gbinder_io_32, NULL);
+    GBinderLocalRequest* req = test_local_request_new();
     GBinderOutputData* data;
 
     gbinder_local_request_append_int64(req, value);
@@ -265,7 +275,7 @@ test_float(
     void)
 {
     const gfloat value = 123456789;
-    GBinderLocalRequest* req = gbinder_local_request_new(&gbinder_io_32, NULL);
+    GBinderLocalRequest* req = test_local_request_new();
     GBinderOutputData* data;
 
     gbinder_local_request_append_float(req, value);
@@ -287,7 +297,7 @@ test_double(
     void)
 {
     const gdouble value = 123456789;
-    GBinderLocalRequest* req = gbinder_local_request_new(&gbinder_io_32, NULL);
+    GBinderLocalRequest* req = test_local_request_new();
     GBinderOutputData* data;
 
     gbinder_local_request_append_double(req, value);
@@ -311,7 +321,7 @@ test_string8(
     /* The size of the string gets aligned at 4-byte boundary */
     static const char input[] = "test";
     static const guint8 output[] = { 't', 'e', 's', 't', 0, 0, 0, 0 };
-    GBinderLocalRequest* req = gbinder_local_request_new(&gbinder_io_32, NULL);
+    GBinderLocalRequest* req = test_local_request_new();
     GBinderOutputData* data;
 
     gbinder_local_request_append_string8(req, input);
@@ -323,7 +333,7 @@ test_string8(
     gbinder_local_request_unref(req);
 
     /* NULL string doesn't get encoded at all (should it be?) */
-    req = gbinder_local_request_new(&gbinder_io_32, NULL);
+    req = test_local_request_new();
     gbinder_local_request_append_string8(req, NULL);
     data = gbinder_local_request_data(req);
     g_assert(!gbinder_output_data_offsets(data));
@@ -347,7 +357,7 @@ test_string16(
         TEST_INT16_BYTES('x'), 0x00, 0x00
     };
     const gint32 null_output = -1;
-    GBinderLocalRequest* req = gbinder_local_request_new(&gbinder_io_32, NULL);
+    GBinderLocalRequest* req = test_local_request_new();
     GBinderOutputData* data;
 
     gbinder_local_request_append_string16(req, input);
@@ -359,7 +369,7 @@ test_string16(
     gbinder_local_request_unref(req);
 
     /* NULL string gets encoded as -1 */
-    req = gbinder_local_request_new(&gbinder_io_32, NULL);
+    req = test_local_request_new();
     gbinder_local_request_append_string16(req, NULL);
     data = gbinder_local_request_data(req);
     g_assert(!gbinder_output_data_offsets(data));
@@ -378,7 +388,7 @@ void
 test_hidl_string(
     void)
 {
-    GBinderLocalRequest* req = gbinder_local_request_new(&gbinder_io_32, NULL);
+    GBinderLocalRequest* req = test_local_request_new();
     GBinderOutputData* data;
     GUtilIntArray* offsets;
 
@@ -401,7 +411,7 @@ void
 test_hidl_string_vec(
     void)
 {
-    GBinderLocalRequest* req = gbinder_local_request_new(&gbinder_io_32, NULL);
+    GBinderLocalRequest* req = test_local_request_new();
     GBinderOutputData* data;
     GUtilIntArray* offsets;
 
@@ -424,19 +434,36 @@ void
 test_local_object(
     void)
 {
-    GBinderLocalRequest* req = gbinder_local_request_new(&gbinder_io_32, NULL);
+    GBinderLocalRequest* req;
     GBinderOutputData* data;
     GUtilIntArray* offsets;
+    GBinderIpc* ipc = gbinder_ipc_new(NULL, NULL);
+    const char* const ifaces[] = { "android.hidl.base@1.0::IBase", NULL };
+    GBinderLocalObject* obj = gbinder_local_object_new(ipc, ifaces, NULL, NULL);
 
-    gbinder_local_request_append_local_object(req, NULL);
+    /* Append a real object */
+    req = test_local_request_new();
+    gbinder_local_request_append_local_object(req, obj);
     data = gbinder_local_request_data(req);
     offsets = gbinder_output_data_offsets(data);
     g_assert(offsets);
-    g_assert(offsets->count == 1);
-    g_assert(offsets->data[0] == 0);
+    g_assert_cmpuint(offsets->count, == ,1);
+    g_assert_cmpuint(offsets->data[0], == ,0);
+    g_assert_cmpuint(gbinder_output_data_buffers_size(data), == ,0);
+    g_assert_cmpuint(data->bytes->len, == ,BINDER_OBJECT_SIZE_32);
+    gbinder_local_request_unref(req);
+
+    /* Append NULL object */
+    req = test_local_request_new();
+    gbinder_local_request_append_local_object(req, NULL);
+    data = gbinder_local_request_data(req);
+    g_assert(!gbinder_output_data_offsets(data));
     g_assert(!gbinder_output_data_buffers_size(data));
     g_assert(data->bytes->len == BINDER_OBJECT_SIZE_32);
     gbinder_local_request_unref(req);
+
+    gbinder_local_object_unref(obj);
+    gbinder_ipc_unref(ipc);
 }
 
 /*==========================================================================*
@@ -448,16 +475,12 @@ void
 test_remote_object(
     void)
 {
-    GBinderLocalRequest* req = gbinder_local_request_new(&gbinder_io_32, NULL);
+    GBinderLocalRequest* req = test_local_request_new();
     GBinderOutputData* data;
-    GUtilIntArray* offsets;
 
     gbinder_local_request_append_remote_object(req, NULL);
     data = gbinder_local_request_data(req);
-    offsets = gbinder_output_data_offsets(data);
-    g_assert(offsets);
-    g_assert(offsets->count == 1);
-    g_assert(offsets->data[0] == 0);
+    g_assert(!gbinder_output_data_offsets(data));
     g_assert(!gbinder_output_data_buffers_size(data));
     g_assert(data->bytes->len == BINDER_OBJECT_SIZE_32);
     gbinder_local_request_unref(req);
@@ -477,7 +500,8 @@ test_remote_request(
     static const guint8 output[] = { 't', 'e', 's', 't', 0, 0, 0, 0 };
     GBinderDriver* driver = gbinder_driver_new(GBINDER_DEFAULT_BINDER, NULL);
     const GBinderIo* io = gbinder_driver_io(driver);
-    GBinderLocalRequest* req = gbinder_local_request_new(io, NULL);
+    const GBinderRpcProtocol* protocol = gbinder_driver_protocol(driver);
+    GBinderLocalRequest* req = gbinder_local_request_new(io, protocol, NULL);
     GBinderLocalRequest* req2;
     GBinderOutputData* data2;
     const GByteArray* bytes;
@@ -530,12 +554,10 @@ test_remote_request_obj_validate_data(
     const GByteArray* bytes = data->bytes;
     GUtilIntArray* offsets = gbinder_output_data_offsets(data);
 
-    offsets = gbinder_output_data_offsets(data);
     g_assert(offsets);
-    g_assert(offsets->count == 3);
+    g_assert(offsets->count == 2);
     g_assert(offsets->data[0] == 4);
     g_assert(offsets->data[1] == 4 + BUFFER_OBJECT_SIZE_64);
-    g_assert(offsets->data[2] == 4 + 2*BUFFER_OBJECT_SIZE_64);
     g_assert(bytes->len == 4 + 2*BUFFER_OBJECT_SIZE_64 + BINDER_OBJECT_SIZE_64);
     /* GBinderHidlString + the contents (2 bytes) aligned at 8-byte boundary */
     g_assert(gbinder_output_data_buffers_size(data) ==
@@ -549,7 +571,8 @@ test_remote_request_obj(
 {
     GBinderDriver* driver = gbinder_driver_new(GBINDER_DEFAULT_BINDER, NULL);
     const GBinderIo* io = gbinder_driver_io(driver);
-    GBinderLocalRequest* req = gbinder_local_request_new(io, NULL);
+    const GBinderRpcProtocol* protocol = gbinder_driver_protocol(driver);
+    GBinderLocalRequest* req = gbinder_local_request_new(io, protocol, NULL);
     GBinderLocalRequest* req2;
     GBinderOutputData* data;
     GUtilIntArray* offsets;
@@ -591,6 +614,9 @@ test_remote_request_obj(
 
 int main(int argc, char* argv[])
 {
+    TestConfig test_config;
+    int result;
+
     g_test_init(&argc, &argv, NULL);
     g_test_add_func(TEST_PREFIX "null", test_null);
     g_test_add_func(TEST_PREFIX "cleanup", test_cleanup);
@@ -609,7 +635,10 @@ int main(int argc, char* argv[])
     g_test_add_func(TEST_PREFIX "remote_request", test_remote_request);
     g_test_add_func(TEST_PREFIX "remote_request_obj", test_remote_request_obj);
     test_init(&test_opt, argc, argv);
-    return g_test_run();
+    test_config_init(&test_config, TMP_DIR_TEMPLATE);
+    result = g_test_run();
+    test_config_cleanup(&test_config);
+    return result;
 }
 
 /*

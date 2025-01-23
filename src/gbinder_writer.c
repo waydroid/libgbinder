@@ -1,8 +1,8 @@
 /*
- * Copyright (C) 2018-2022 Jolla Ltd.
- * Copyright (C) 2018-2022 Slava Monich <slava.monich@jolla.com>
+ * Copyright (C) 2018-2024 Jolla Ltd.
+ * Copyright (C) 2018-2024 Slava Monich <slava@monich.com>
  *
- * You may use this file under the terms of BSD license as follows:
+ * You may use this file under the terms of the BSD license as follows:
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -52,6 +52,20 @@ typedef struct gbinder_writer_priv {
     GBinderWriterData* data;
 } GBinderWriterPriv;
 
+const GBinderWriterType gbinder_writer_type_byte = { "byte", 1, NULL };
+const GBinderWriterType gbinder_writer_type_int32 = { "int32", 4, NULL };
+static const GBinderWriterField gbinder_writer_type_hidl_string_f[] = {
+    {
+        "hidl_string.data.str", 0, NULL,
+        gbinder_writer_field_hidl_string_write_buf, NULL
+    },
+    GBINDER_WRITER_FIELD_END()
+};
+const GBinderWriterType gbinder_writer_type_hidl_string = {
+    "hidl_string", sizeof(GBinderHidlString),
+    gbinder_writer_type_hidl_string_f
+};
+
 G_STATIC_ASSERT(sizeof(GBinderWriter) >= sizeof(GBinderWriterPriv));
 
 GBINDER_INLINE_FUNC GBinderWriterPriv* gbinder_writer_cast(GBinderWriter* pub)
@@ -92,6 +106,7 @@ gbinder_writer_data_append_contents(
             gbinder_buffer_contents_ref(contents));
         if (objects && *objects) {
             const GBinderIo* io = gbinder_buffer_io(buffer);
+            const GBinderRpcProtocol* proto = gbinder_buffer_protocol(buffer);
 
             /* GBinderIo must be the same because it's defined by the kernel */
             GASSERT(io == data->io);
@@ -114,21 +129,22 @@ gbinder_writer_data_append_contents(
                 gutil_int_array_append(data->offsets, dest->len);
 
                 /* Convert remote object into local if necessary */
-                if (convert && io->decode_binder_handle(obj, &handle) &&
+                if (convert && io->decode_binder_handle(obj, &handle, proto) &&
                     (local = gbinder_object_converter_handle_to_local
                     (convert, handle))) {
                     const guint pos = dest->len;
 
                     g_byte_array_set_size(dest, pos +
                         GBINDER_MAX_BINDER_OBJECT_SIZE);
-                    objsize = io->encode_local_object(dest->data + pos, local);
+                    objsize = io->encode_local_object(dest->data + pos,
+                        local, proto);
                     g_byte_array_set_size(dest, pos + objsize);
 
                     /* Keep the reference */
                     data->cleanup = gbinder_cleanup_add(data->cleanup,
                         (GDestroyNotify) gbinder_local_object_unref, local);
                 } else {
-                    objsize = io->object_size(obj);
+                    objsize = io->object_size(obj, proto);
                     g_byte_array_append(dest, obj, objsize);
                 }
 
@@ -196,6 +212,23 @@ gbinder_writer_bytes_written(
     return G_LIKELY(data) ? data->bytes->len : 0;
 }
 
+static
+void
+gbinder_writer_data_append_padded(
+    GByteArray* buf,
+    const void* data,
+    guint size)
+{
+    /* Primitive values are padded to 4-byte boundary */
+    const guint padded_size = 4;
+    guint8* ptr;
+
+    g_byte_array_set_size(buf, buf->len + padded_size);
+    ptr = buf->data + (buf->len - padded_size);
+    memcpy(ptr, data, size);
+    memset(ptr + size, 0, padded_size - size);
+}
+
 void
 gbinder_writer_append_bool(
     GBinderWriter* self,
@@ -213,8 +246,9 @@ gbinder_writer_data_append_bool(
     GBinderWriterData* data,
     gboolean value)
 {
-    /* Primitive values are padded to 4-byte boundary */
-    gbinder_writer_data_append_int32(data, value != FALSE);
+    const guint8 b = (value != FALSE);
+
+    gbinder_writer_data_append_padded(data->bytes, &b, sizeof(b));
 }
 
 void
@@ -225,8 +259,7 @@ gbinder_writer_append_int8(
     GBinderWriterData* data = gbinder_writer_data(self);
 
     if (G_LIKELY(data)) {
-        /* Primitive values are padded to 4-byte boundary */
-        gbinder_writer_data_append_int32(data, value);
+        gbinder_writer_data_append_padded(data->bytes, &value, sizeof(value));
     }
 }
 
@@ -238,8 +271,7 @@ gbinder_writer_append_int16(
     GBinderWriterData* data = gbinder_writer_data(self);
 
     if (G_LIKELY(data)) {
-        /* Primitive values are padded to 4-byte boundary */
-        gbinder_writer_data_append_int32(data, value);
+        gbinder_writer_data_append_padded(data->bytes, &value, sizeof(value));
     }
 }
 
@@ -491,37 +523,37 @@ gbinder_writer_data_append_string16_len(
         gsize padded_len = G_ALIGN4((len+1)*2);
         guint32* len_ptr;
         gunichar2* utf16_ptr;
+        gunichar2* utf16 = NULL;
+
+        /* Create utf-16 string to make sure of its size */
+        if (len > 0) {
+            glong utf16_len = 0;
+
+            utf16 = g_utf8_to_utf16(utf8, num_bytes, NULL, &utf16_len, NULL);
+            if (utf16) {
+                len = utf16_len;
+                padded_len = G_ALIGN4((len+1)*2);
+            }
+        }
 
         /* Preallocate space */
         g_byte_array_set_size(buf, old_size + padded_len + 4);
         len_ptr = (guint32*)(buf->data + old_size);
         utf16_ptr = (gunichar2*)(len_ptr + 1);
 
-        /* TODO: this could be optimized for ASCII strings, i.e. if
-         * len equals num_bytes */
-        if (len > 0) {
-            glong utf16_len = 0;
-            gunichar2* utf16 = g_utf8_to_utf16(utf8, num_bytes, NULL,
-                &utf16_len, NULL);
-
-            if (utf16) {
-                len = utf16_len;
-                padded_len = G_ALIGN4((len+1)*2);
-                memcpy(utf16_ptr, utf16, (len+1)*2);
-                g_free(utf16);
-            }
+        /* Copy string */
+        if (utf16) {
+            memcpy(utf16_ptr, utf16, len*2);
+            g_free(utf16);
         }
 
         /* Actual length */
         *len_ptr = len;
 
         /* Zero padding */
-        if (padded_len - (len + 1)*2) {
-            memset(utf16_ptr + (len + 1), 0, padded_len - (len + 1)*2);
+        if (padded_len > len*2) {
+            memset(utf16_ptr + len, 0, padded_len - len*2);
         }
-
-        /* Correct the packet size if necessaary */
-        g_byte_array_set_size(buf, old_size + padded_len + 4);
     } else if (utf8) {
         /* Empty string */
         gbinder_writer_data_append_string16_empty(data);
@@ -727,6 +759,135 @@ gbinder_writer_append_buffer_object(
         return gbinder_writer_data_append_buffer_object(data, buf, len, NULL);
     }
     return 0;
+}
+
+static
+void
+gbinder_writer_append_fields(
+    GBinderWriter* writer,
+    const void* obj,
+    const GBinderWriterField* fields,
+    const GBinderParent* parent) /* Since 1.1.27 */
+{
+    if (fields) {
+        const GBinderWriterField* field = fields;
+        const guint8* base_ptr = obj;
+        GBinderParent parent2;
+
+        parent2.index = parent->index;
+        for (field = fields; field->type || field->write_buf; field++) {
+            const void* field_ptr = base_ptr + field->offset;
+
+            parent2.offset = parent->offset + field->offset;
+            if (field->write_buf) {
+                field->write_buf(writer, field_ptr, field, &parent2);
+            } else {
+                gbinder_writer_append_buffer_object_with_parent(writer,
+                    *(void**)field_ptr, field->type->size, &parent2);
+            }
+        }
+    }
+}
+
+/*
+ * Note that gbinder_writer_append_struct doesn't copy the data, it writes
+ * buffer objects pointing to whatever was passed in. The caller must make
+ * sure that those pointers outlive the transaction. That's most commonly
+ * done with by using gbinder_writer_malloc() and friends for allocating
+ * memory for the transaction.
+ */
+void
+gbinder_writer_append_struct(
+    GBinderWriter* writer,
+    const void* ptr,
+    const GBinderWriterType* type,
+    const GBinderParent* parent) /* Since 1.1.27 */
+{
+    if (type) {
+        GBinderParent child;
+
+        child.offset = 0;
+        child.index = gbinder_writer_append_buffer_object_with_parent(writer,
+            ptr, type->size, parent);
+        gbinder_writer_append_fields(writer, ptr, type->fields, &child);
+    } else {
+        /* No type - no fields */
+        gbinder_writer_append_buffer_object_with_parent(writer, ptr, 0, parent);
+    }
+}
+
+/*
+ * Appends top-level vec<type>. Allocates GBinderHidlVec for that, but
+ * unlike gbinder_writer_append_hidl_vec(), doesn't copy the contents
+ * of the vector.
+ */
+void
+gbinder_writer_append_struct_vec(
+    GBinderWriter* writer,
+    const void* ptr,
+    guint count,
+    const GBinderWriterType* type) /* Since 1.1.29 */
+{
+    GBinderHidlVec* vec = gbinder_writer_new0(writer, GBinderHidlVec);
+    GBinderWriterField vec_f[2];
+    GBinderWriterType vec_t;
+
+    memset(vec_f, 0, sizeof(vec_f));
+    vec_f->name = "hidl_vec.data.ptr";
+    vec_f->type = type;
+    vec_f->write_buf = gbinder_writer_field_hidl_vec_write_buf;
+
+    memset(&vec_t, 0, sizeof(vec_t));
+    vec_t.name = "hidl_vec";
+    vec_t.size = sizeof(GBinderHidlVec);
+    vec_t.fields = vec_f;
+
+    vec->owns_buffer = TRUE;
+    vec->data.ptr = ptr;
+    vec->count = count;
+
+    gbinder_writer_append_struct(writer, vec, &vec_t, NULL);
+}
+
+void
+gbinder_writer_field_hidl_vec_write_buf(
+    GBinderWriter* writer,
+    const void* ptr,
+    const GBinderWriterField* field,
+    const GBinderParent* parent) /* Since 1.1.27 */
+{
+    const GBinderHidlVec* vec = ptr;
+    const guint8* buf = vec->data.ptr;
+    const GBinderWriterType* elem_type = field->type;
+
+    if (elem_type) {
+        GBinderParent child;
+        guint i;
+
+        child.index = gbinder_writer_append_buffer_object_with_parent
+            (writer, buf, vec->count * elem_type->size, parent);
+        for (i = 0; i < vec->count; i++) {
+            child.offset = elem_type->size * i;
+            gbinder_writer_append_fields(writer, buf + child.offset,
+                elem_type->fields, &child);
+        }
+    } else {
+        /* Probably a programming error but write an empty buffer anyway */
+        gbinder_writer_append_buffer_object_with_parent(writer, buf, 0, parent);
+    }
+}
+
+void
+gbinder_writer_field_hidl_string_write_buf(
+    GBinderWriter* writer,
+    const void* ptr,
+    const GBinderWriterField* field,
+    const GBinderParent* parent) /* Since 1.1.27 */
+{
+    const GBinderHidlString* str = ptr;
+
+    gbinder_writer_append_buffer_object_with_parent(writer, str->data.str,
+        str->data.str ? (str->len + 1) : 0, parent);
 }
 
 guint
@@ -1012,11 +1173,14 @@ gbinder_writer_data_append_local_object(
     /* Preallocate enough space */
     g_byte_array_set_size(buf, offset + GBINDER_MAX_BINDER_OBJECT_SIZE);
     /* Write the object */
-    n = data->io->encode_local_object(buf->data + offset, obj);
+    n = data->io->encode_local_object(buf->data + offset, obj, data->protocol);
     /* Fix the data size */
     g_byte_array_set_size(buf, offset + n);
-    /* Record the offset */
-    gbinder_writer_data_record_offset(data, offset);
+
+    if (obj) {
+        /* Record the offset */
+        gbinder_writer_data_record_offset(data, offset);
+    }
 }
 
 void
@@ -1042,19 +1206,29 @@ gbinder_writer_append_byte_array(
     GASSERT(len >= 0);
     if (G_LIKELY(data)) {
         GByteArray* buf = data->bytes;
-        void* ptr;
+        gsize padded_len;
+        guint8* ptr;
 
         if (!byte_array) {
             len = 0;
         }
 
-        g_byte_array_set_size(buf, buf->len + sizeof(len) + len);
-        ptr = buf->data + (buf->len - sizeof(len) - len);
+        /*
+         * Android aligns byte array reads and writes to 4 bytes and
+         * pads with 0xFF.
+         */
+        padded_len = G_ALIGN4(len);
+        g_byte_array_set_size(buf, buf->len + sizeof(len) + padded_len);
+        ptr = buf->data + (buf->len - sizeof(len) - padded_len);
 
         if (len > 0) {
             *((gint32*)ptr) = len;
             ptr += sizeof(len);
             memcpy(ptr, byte_array, len);
+            /* FF padding */
+            if (padded_len > len) {
+                memset(ptr + len, 0xff, padded_len - len);
+            }
         } else {
             *((gint32*)ptr) = -1;
         }
@@ -1137,8 +1311,11 @@ gbinder_writer_data_append_remote_object(
     n = data->io->encode_remote_object(buf->data + offset, obj);
     /* Fix the data size */
     g_byte_array_set_size(buf, offset + n);
-    /* Record the offset */
-    gbinder_writer_data_record_offset(data, offset);
+
+    if (obj) {
+        /* Record the offset */
+        gbinder_writer_data_record_offset(data, offset);
+    }
 }
 
 static

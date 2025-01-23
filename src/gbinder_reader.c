@@ -1,6 +1,6 @@
 /*
- * Copyright (C) 2018-2022 Jolla Ltd.
- * Copyright (C) 2018-2022 Slava Monich <slava.monich@jolla.com>
+ * Copyright (C) 2018-2024 Jolla Ltd.
+ * Copyright (C) 2018-2024 Slava Monich <slava@monich.com>
  *
  * You may use this file under the terms of BSD license as follows:
  *
@@ -124,17 +124,24 @@ gbinder_reader_read_bool(
     GBinderReader* reader,
     gboolean* value)
 {
-    GBinderReaderPriv* p = gbinder_reader_cast(reader);
+    /*
+     * Android's libhwbinder writes bool as a single byte and pads it
+     * with zeros, but libbinder writes bool as int32 in native byte
+     * order. The latter becomes either [0x01, 0x00, 0x00, 0x00] or
+     * [0x00, 0x00, 0x00, 0x01] depending on the byte order. Reading
+     * uint32 and comparing it with zero works in either case.
+     */
+    if (value) {
+        guint32 padded;
 
-    /* Boolean values are supposed to be padded to 4-byte boundary */
-    if (gbinder_reader_can_read(p, 4)) {
-        if (value) {
-            *value = (p->ptr[0] != 0);
+        if (gbinder_reader_read_uint32(reader, &padded)) {
+            *value = (padded != 0);
+            return TRUE;
+        } else {
+            return FALSE;
         }
-        p->ptr += 4;
-        return TRUE;
     } else {
-        return FALSE;
+        return gbinder_reader_read_uint32(reader, NULL);
     }
 }
 
@@ -151,18 +158,17 @@ gbinder_reader_read_uint8(
     GBinderReader* reader,
     guint8* value) /* Since 1.1.15 */
 {
-    /* Primitive values are supposed to be padded to 4-byte boundary */
-    if (value) {
-        guint32 padded;
+    GBinderReaderPriv* p = gbinder_reader_cast(reader);
 
-        if (gbinder_reader_read_uint32(reader, &padded)) {
-            *value = (guint8)padded;
-            return TRUE;
-        } else {
-            return FALSE;
+    /* Primitive values are supposed to be padded to 4-byte boundary */
+    if (gbinder_reader_can_read(p, 4)) {
+        if (value) {
+            *value = p->ptr[0];
         }
+        p->ptr += 4;
+        return TRUE;
     } else {
-        return gbinder_reader_read_uint32(reader, NULL);
+        return FALSE;
     }
 }
 
@@ -179,18 +185,17 @@ gbinder_reader_read_uint16(
     GBinderReader* reader,
     guint16* value) /* Since 1.1.15 */
 {
-    /* Primitive values are supposed to be padded to 4-byte boundary */
-    if (value) {
-        guint32 padded;
+    GBinderReaderPriv* p = gbinder_reader_cast(reader);
 
-        if (gbinder_reader_read_uint32(reader, &padded)) {
-            *value = (guint16)padded;
-            return TRUE;
-        } else {
-            return FALSE;
+    /* Primitive values are supposed to be padded to 4-byte boundary */
+    if (gbinder_reader_can_read(p, 4)) {
+        if (value) {
+            *value = *(guint16*)p->ptr;
         }
+        p->ptr += 4;
+        return TRUE;
     } else {
-        return gbinder_reader_read_uint32(reader, NULL);
+        return FALSE;
     }
 }
 
@@ -352,7 +357,8 @@ gbinder_reader_read_nullable_object(
     if (gbinder_reader_can_read_object(p)) {
         const GBinderReaderData* data = p->data;
         const guint eaten = data->reg->io->decode_binder_object(p->ptr,
-            gbinder_reader_bytes_remaining(reader), data->reg, out);
+            gbinder_reader_bytes_remaining(reader), data->reg, out,
+            gbinder_buffer_protocol(data->buffer));
 
         if (eaten) {
             p->ptr += eaten;
@@ -611,6 +617,7 @@ gbinder_reader_read_hidl_string_vec(
     return NULL;
 }
 
+/* The equivalent of Android's Parcel::readCString */
 const char*
 gbinder_reader_read_string8(
     GBinderReader* reader)
@@ -635,6 +642,49 @@ gbinder_reader_read_string8(
     return NULL;
 }
 
+/* The equivalent of Android's Parcel::readString8 */
+gboolean
+gbinder_reader_read_nullable_string8(
+    GBinderReader* reader,
+    const char** out,
+    gsize* out_len) /* Since 1.1.41 */
+{
+    GBinderReaderPriv* p = gbinder_reader_cast(reader);
+
+    if ((p->ptr + 4) <= p->end) {
+        const gint32* len_ptr = (gint32*)p->ptr;
+        const gint32 len = *len_ptr;
+
+        if (len == -1) {
+            /* NULL string */
+            p->ptr += 4;
+            if (out) {
+                *out = NULL;
+            }
+            if (out_len) {
+                *out_len = 0;
+            }
+            return TRUE;
+        } else if (len >= 0) {
+            const guint32 padded_len = G_ALIGN4(len + 1);
+            const char* str = (char*)(p->ptr + 4);
+
+            if ((p->ptr + padded_len + 4) <= p->end && !str[len]) {
+                p->ptr += padded_len + 4;
+                if (out) {
+                    *out = str;
+                }
+                if (out_len) {
+                    *out_len = len;
+                }
+                return TRUE;
+            }
+        }
+    }
+    return FALSE;
+}
+
+/* The equivalent of Android's Parcel::readString16 */
 gboolean
 gbinder_reader_read_nullable_string16(
     GBinderReader* reader,
@@ -676,17 +726,20 @@ gbinder_reader_read_nullable_string16_utf16(
             return TRUE;
         } else if (len >= 0) {
             const guint32 padded_len = G_ALIGN4((len + 1)*2);
-            const gunichar2* utf16 = (gunichar2*)(p->ptr + 4);
 
             if ((p->ptr + padded_len + 4) <= p->end) {
-                p->ptr += padded_len + 4;
-                if (out) {
-                    *out = utf16;
+                const gunichar2* utf16 = (gunichar2*)(p->ptr + 4);
+
+                if (!utf16[len]) {
+                    p->ptr += padded_len + 4;
+                    if (out) {
+                        *out = utf16;
+                    }
+                    if (out_len) {
+                        *out_len = len;
+                    }
+                    return TRUE;
                 }
-                if (out_len) {
-                    *out_len = len;
-                }
-                return TRUE;
             }
         }
     }
@@ -722,26 +775,7 @@ gboolean
 gbinder_reader_skip_string16(
     GBinderReader* reader)
 {
-    GBinderReaderPriv* p = gbinder_reader_cast(reader);
-
-    if ((p->ptr + 4) <= p->end) {
-        const gint32* len_ptr = (gint32*)p->ptr;
-        const gint32 len = *len_ptr;
-
-        if (len == -1) {
-            /* NULL string */
-            p->ptr += 4;
-            return TRUE;
-        } else if (len >= 0) {
-            const guint32 padded_len = G_ALIGN4((len+1)*2);
-
-            if ((p->ptr + padded_len + 4) <= p->end) {
-                p->ptr += padded_len + 4;
-                return TRUE;
-            }
-        }
-    }
-    return FALSE;
+    return gbinder_reader_read_nullable_string16_utf16(reader, NULL, NULL);
 }
 
 const void*
@@ -764,7 +798,8 @@ gbinder_reader_read_byte_array(
             *len = (gsize)*ptr;
             p->ptr += sizeof(*ptr);
             data = p->ptr;
-            p->ptr += *len;
+            /* Android aligns byte array reads and writes to 4 bytes */
+            p->ptr += G_ALIGN4(*len);
         }
     }
     return data;

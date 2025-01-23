@@ -1,6 +1,6 @@
 /*
+ * Copyright (C) 2018-2024 Slava Monich <slava@monich.com>
  * Copyright (C) 2018-2022 Jolla Ltd.
- * Copyright (C) 2018-2022 Slava Monich <slava.monich@jolla.com>
  *
  * You may use this file under the terms of BSD license as follows:
  *
@@ -33,7 +33,6 @@
 #include "test_binder.h"
 
 #include "gbinder_buffer_p.h"
-#include "gbinder_config.h"
 #include "gbinder_driver.h"
 #include "gbinder_ipc.h"
 #include "gbinder_local_object_p.h"
@@ -51,6 +50,7 @@
 #include <errno.h>
 
 static TestOpt test_opt;
+static const char TMP_DIR_TEMPLATE[] = "gbinder-test-local-object-XXXXXX";
 
 /* android.hidl.base@1.0::IBase */
 #define TEST_BASE_INTERFACE_BYTES \
@@ -140,6 +140,8 @@ test_null(
     gbinder_local_object_handle_decrefs(NULL);
     gbinder_local_object_handle_acquire(NULL, NULL);
     gbinder_local_object_handle_release(NULL);
+    gbinder_local_object_handle_release(NULL);
+    gbinder_local_object_set_stability(NULL, GBINDER_STABILITY_UNDECLARED);
 }
 
 /*==========================================================================*
@@ -188,6 +190,7 @@ test_basic(
     g_assert(gbinder_local_object_ref(bar) == bar);
     gbinder_local_object_drop(bar);
     gbinder_local_object_unref(bar);
+    test_binder_exit_wait(&test_opt, NULL);
 }
 
 /*==========================================================================*
@@ -233,6 +236,7 @@ test_ping(
     gbinder_local_object_unref(obj);
     gbinder_local_reply_unref(reply);
     gbinder_remote_request_unref(req);
+    test_binder_exit_wait(&test_opt, NULL);
 }
 
 /*==========================================================================*
@@ -282,6 +286,7 @@ test_interface(
     gbinder_local_object_unref(obj);
     gbinder_local_reply_unref(reply);
     gbinder_remote_request_unref(req);
+    test_binder_exit_wait(&test_opt, NULL);
 }
 
 /*==========================================================================*
@@ -332,6 +337,7 @@ test_hidl_ping(
     gbinder_local_object_unref(obj);
     gbinder_local_reply_unref(reply);
     gbinder_remote_request_unref(req);
+    test_binder_exit_wait(&test_opt, NULL);
 }
 
 /*==========================================================================*
@@ -385,6 +391,7 @@ test_get_descriptor(
     gbinder_local_object_unref(obj);
     gbinder_local_reply_unref(reply);
     gbinder_remote_request_unref(req);
+    test_binder_exit_wait(&test_opt, NULL);
 }
 
 /*==========================================================================*
@@ -436,6 +443,7 @@ test_descriptor_chain(
     gbinder_local_object_unref(obj);
     gbinder_local_reply_unref(reply);
     gbinder_remote_request_unref(req);
+    test_binder_exit_wait(&test_opt, NULL);
 }
 
 /*==========================================================================*
@@ -546,6 +554,7 @@ test_custom_iface(
     gbinder_local_object_unref(obj);
     gbinder_local_reply_unref(reply);
     gbinder_remote_request_unref(req);
+    test_binder_exit_wait(&test_opt, NULL);
 }
 
 /*==========================================================================*
@@ -603,6 +612,7 @@ test_reply_status(
     gbinder_ipc_unref(ipc);
     gbinder_local_object_unref(obj);
     gbinder_remote_request_unref(req);
+    test_binder_exit_wait(&test_opt, NULL);
 }
 
 /*==========================================================================*
@@ -634,16 +644,15 @@ test_increfs_run(
         test_increfs_cb, loop);
 
     /* ipc is not an object, will be ignored */
-    test_binder_br_increfs(fd, ipc);
-    test_binder_br_increfs(fd, obj);
-    test_binder_set_looper_enabled(fd, TEST_LOOPER_ENABLE);
+    test_binder_br_increfs(fd, ANY_THREAD, ipc);
+    test_binder_br_increfs(fd, ANY_THREAD, obj);
     test_run(&test_opt, loop);
 
     g_assert(obj->weak_refs == 1);
     gbinder_local_object_remove_handler(obj, id);
     gbinder_local_object_unref(obj);
     gbinder_ipc_unref(ipc);
-    gbinder_ipc_exit();
+    test_binder_exit_wait(&test_opt, loop);
     g_main_loop_unref(loop);
 }
 
@@ -685,17 +694,16 @@ test_decrefs_run(
         test_decrefs_cb, loop);
 
     /* ipc is not an object, will be ignored */
-    test_binder_br_decrefs(fd, ipc);
-    test_binder_br_increfs(fd, obj);
-    test_binder_br_decrefs(fd, obj);
-    test_binder_set_looper_enabled(fd, TEST_LOOPER_ENABLE);
+    test_binder_br_decrefs(fd, ANY_THREAD, ipc);
+    test_binder_br_increfs(fd, ANY_THREAD, obj);
+    test_binder_br_decrefs(fd, ANY_THREAD, obj);
     test_run(&test_opt, loop);
 
     g_assert(obj->weak_refs == 0);
     gbinder_local_object_remove_handler(obj, id);
     gbinder_local_object_unref(obj);
     gbinder_ipc_unref(ipc);
-    gbinder_ipc_exit();
+    test_binder_exit_wait(&test_opt, loop);
     g_main_loop_unref(loop);
 }
 
@@ -736,16 +744,15 @@ test_acquire_run(
         test_acquire_cb, loop);
 
     /* ipc is not an object, will be ignored */
-    test_binder_br_acquire(fd, ipc);
-    test_binder_br_acquire(fd, obj);
-    test_binder_set_looper_enabled(fd, TEST_LOOPER_ENABLE);
+    test_binder_br_acquire(fd, ANY_THREAD, ipc);
+    test_binder_br_acquire(fd, ANY_THREAD, obj);
     test_run(&test_opt, loop);
 
     g_assert(obj->strong_refs == 1);
     gbinder_local_object_remove_handler(obj, id);
     gbinder_local_object_unref(obj);
     gbinder_ipc_unref(ipc);
-    gbinder_ipc_exit();
+    test_binder_exit_wait(&test_opt, loop);
     g_main_loop_unref(loop);
 }
 
@@ -786,17 +793,16 @@ test_release_run(
         test_release_cb, loop);
 
     /* ipc is not an object, will be ignored */
-    test_binder_br_release(fd, ipc);
-    test_binder_br_acquire(fd, obj);
-    test_binder_br_release(fd, obj);
-    test_binder_set_looper_enabled(fd, TEST_LOOPER_ENABLE);
+    test_binder_br_release(fd, ANY_THREAD, ipc);
+    test_binder_br_acquire(fd, ANY_THREAD, obj);
+    test_binder_br_release(fd, ANY_THREAD, obj);
     test_run(&test_opt, loop);
 
     g_assert(obj->strong_refs == 0);
     gbinder_local_object_remove_handler(obj, id);
     gbinder_local_object_unref(obj);
     gbinder_ipc_unref(ipc);
-    gbinder_ipc_exit();
+    test_binder_exit_wait(&test_opt, loop);
     g_main_loop_unref(loop);
 }
 
@@ -816,17 +822,8 @@ test_release(
 
 int main(int argc, char* argv[])
 {
-    const char* default_config_dir;
-    const char* default_config_file;
-    char* config_dir = g_dir_make_tmp("gbinder-test-local-object-XXXXXX", NULL);
-    char* config_file = g_build_filename(config_dir, "test.conf", NULL);
+    TestConfig test_config;
     int result;
-
-    /* Point gbinder_config_file to a non-existent file */
-    default_config_dir = gbinder_config_dir;
-    default_config_file = gbinder_config_file;
-    gbinder_config_dir = config_dir;
-    gbinder_config_file = config_file;
 
     G_GNUC_BEGIN_IGNORE_DEPRECATIONS;
     g_type_init();
@@ -846,13 +843,9 @@ int main(int argc, char* argv[])
     g_test_add_func(TEST_PREFIX "acquire", test_acquire);
     g_test_add_func(TEST_PREFIX "release", test_release);
     test_init(&test_opt, argc, argv);
+    test_config_init(&test_config, TMP_DIR_TEMPLATE);
     result = g_test_run();
-
-    gbinder_config_dir = default_config_dir;
-    gbinder_config_file = default_config_file;
-    remove(config_dir);
-    g_free(config_dir);
-    g_free(config_file);
+    test_config_cleanup(&test_config);
     return result;
 }
 

@@ -1,6 +1,6 @@
 /*
- * Copyright (C) 2018-2021 Jolla Ltd.
- * Copyright (C) 2018-2021 Slava Monich <slava.monich@jolla.com>
+ * Copyright (C) 2018-2022 Jolla Ltd.
+ * Copyright (C) 2018-2024 Slava Monich <slava@monich.com>
  *
  * You may use this file under the terms of BSD license as follows:
  *
@@ -31,6 +31,7 @@
  */
 
 #include "test_common.h"
+#include "test_binder.h"
 
 #include "gbinder_buffer_p.h"
 #include "gbinder_driver.h"
@@ -43,9 +44,6 @@
 #include <gutil_intarray.h>
 
 static TestOpt test_opt;
-
-#define BINDER_TYPE_BINDER GBINDER_FOURCC('s', 'b', '*', 0x85)
-#define BINDER_OBJECT_SIZE_64 (GBINDER_MAX_BINDER_OBJECT_SIZE)
 
 /*==========================================================================*
  * Dummy GBinderObjectRegistry functions
@@ -97,7 +95,6 @@ test_null(
 
     g_assert(!gbinder_remote_reply_ref(NULL));
     gbinder_remote_reply_unref(NULL);
-    gbinder_remote_reply_set_data(NULL, NULL);
     gbinder_remote_reply_init_reader(NULL, &reader);
     g_assert(gbinder_reader_at_end(&reader));
     g_assert(gbinder_remote_reply_is_empty(NULL));

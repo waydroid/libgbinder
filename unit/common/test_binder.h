@@ -1,6 +1,6 @@
 /*
- * Copyright (C) 2018-2021 Jolla Ltd.
- * Copyright (C) 2018-2021 Slava Monich <slava.monich@jolla.com>
+ * Copyright (C) 2018-2022 Jolla Ltd.
+ * Copyright (C) 2018-2022 Slava Monich <slava.monich@jolla.com>
  *
  * You may use this file under the terms of BSD license as follows:
  *
@@ -35,56 +35,82 @@
 
 #include "test_common.h"
 
-typedef struct test_binder TestBinder;
+#define B_TYPE_LARGE 0x85
+#define BINDER_TYPE_BINDER  GBINDER_FOURCC('s', 'b', '*', B_TYPE_LARGE)
+#define BINDER_TYPE_HANDLE  GBINDER_FOURCC('s', 'h', '*', B_TYPE_LARGE)
+#define BINDER_TYPE_PTR     GBINDER_FOURCC('p', 't', '*', B_TYPE_LARGE)
+
+#define BUFFER_OBJECT_SIZE_32 (24)
+#define BUFFER_OBJECT_SIZE_64 (40)
+#define BINDER_OBJECT_SIZE_32 (16)
+#define BINDER_OBJECT_SIZE_64 (24)
+
+typedef enum test_br_thread {
+    THIS_THREAD = -3,
+    LOOPER_THREAD = -2,
+    TX_THREAD = -1,
+    ANY_THREAD = 0
+} TEST_BR_THREAD;
 
 void
 test_binder_br_noop(
-    int fd);
+    int fd,
+    TEST_BR_THREAD dest);
 
 void
 test_binder_br_increfs(
     int fd,
+    TEST_BR_THREAD dest,
     void* ptr);
 
 void
 test_binder_br_acquire(
     int fd,
+    TEST_BR_THREAD dest,
     void* ptr);
 
 void
 test_binder_br_release(
     int fd,
+    TEST_BR_THREAD dest,
     void* ptr);
 
 void
 test_binder_br_decrefs(
     int fd,
+    TEST_BR_THREAD dest,
     void* ptr);
 
 void
 test_binder_br_transaction_complete(
-    int fd);
-
-void
-test_binder_br_transaction_complete_later(
-    int fd);
+    int fd,
+    TEST_BR_THREAD dest);
 
 void
 test_binder_br_dead_binder(
     int fd,
+    TEST_BR_THREAD dest,
     guint handle);
 
 void
+test_binder_br_dead_binder_obj(
+    int fd,
+    GBinderLocalObject* obj);
+
+void
 test_binder_br_dead_reply(
-    int fd);
+    int fd,
+    TEST_BR_THREAD dest);
 
 void
 test_binder_br_failed_reply(
-    int fd);
+    int fd,
+    TEST_BR_THREAD dest);
 
 void
 test_binder_br_transaction(
     int fd,
+    TEST_BR_THREAD dest,
     void* target,
     guint32 code,
     const GByteArray* bytes);
@@ -92,6 +118,7 @@ test_binder_br_transaction(
 void
 test_binder_br_reply(
     int fd,
+    TEST_BR_THREAD dest,
     guint32 handle,
     guint32 code,
     const GByteArray* bytes);
@@ -99,35 +126,12 @@ test_binder_br_reply(
 void
 test_binder_br_reply_status(
     int fd,
+    TEST_BR_THREAD dest,
     gint32 status);
 
 void
-test_binder_br_reply_later(
-    int fd,
-    guint32 handle,
-    guint32 code,
-    const GByteArray* bytes);
-
-void
-test_binder_br_reply_status_later(
-    int fd,
-    gint32 status);
-
-typedef enum test_looper {
-    TEST_LOOPER_DISABLE,
-    TEST_LOOPER_ENABLE,
-    TEST_LOOPER_ENABLE_ONE
-} TEST_LOOPER;
-
-void
-test_binder_set_looper_enabled(
-    int fd,
-    TEST_LOOPER value);
-
-void
-test_binder_set_passthrough(
-    int fd,
-    gboolean passthrough);
+test_binder_ignore_dead_object(
+    int fd);
 
 int
 test_binder_handle(
